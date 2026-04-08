@@ -1,0 +1,3 @@
+
+Groq API - KEY : 
+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
