@@ -342,7 +342,7 @@ python3 main.py --status
 ### Step 19 — Launch the live dashboard
 Open a second terminal tab:
 ```bash
-cd "/Users/apple/Desktop/Apply Easy"
+cd "/pwd"
 source venv/bin/activate
 python3 dashboard.py
 ```
