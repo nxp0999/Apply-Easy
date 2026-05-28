@@ -82,6 +82,23 @@ def get_section(sections: dict, *keys) -> str:
 
 # ── Section renderers ──────────────────────────────────────────────────────────
 
+def render_summary(text: str) -> str:
+    if not text.strip():
+        return ""
+    # Collapse the summary into one paragraph (2-3 lines from the AI)
+    lines = " ".join(l.strip() for l in text.splitlines() if l.strip())
+    return "\n".join([
+        r"\section{Summary}",
+        r"\vspace{2pt}",
+        r" \begin{itemize}[leftmargin=0.15in, label={}]",
+        r"    \small{\item{",
+        f"     {escape(lines)}",
+        r"    }}",
+        r" \end{itemize}",
+        r" \vspace{-12pt}",
+    ])
+
+
 def render_education(text: str) -> str:
     if not text.strip():
         return ""
@@ -383,18 +400,23 @@ END = r"\end{document}"
 def build_tex(resume_text: str) -> str:
     sections = parse_sections(resume_text)
 
+    # Render each section
+    summ  = render_summary(get_section(sections, "SUMMARY"))
+    skill = render_skills(get_section(sections, "SKILL"))
+    exp   = render_experience(get_section(sections, "EXPERIENCE"))
+    proj  = render_projects(get_section(sections, "PROJECT"))
     edu   = render_education(get_section(sections, "EDUCATION"))
     cert  = render_certifications(get_section(sections, "CERTIF"))
-    skill = render_skills(get_section(sections, "SKILL"))
-    proj  = render_projects(get_section(sections, "PROJECT"))
-    exp   = render_experience(get_section(sections, "EXPERIENCE"))
 
+    # Order matches resume_rules.py SECTION_ORDER:
+    # Name+Contact → Summary → Skills → Experience → Projects → Education → Certifications
     parts = [PREAMBLE, "", HEADING, ""]
+    if summ:  parts += [summ, ""]
+    if skill: parts += [skill, ""]
+    if exp:   parts += [exp, ""]
+    if proj:  parts += [proj, ""]
     if edu:   parts += [edu, ""]
     if cert:  parts += [cert, ""]
-    if skill: parts += [skill, ""]
-    if proj:  parts += [proj, ""]
-    if exp:   parts += [exp, ""]
     parts.append(END)
 
     return "\n".join(parts)
@@ -405,12 +427,14 @@ def build_tex(resume_text: str) -> str:
 def process_job(job_dir: str, compile_pdf: bool = False):
     txt_path = os.path.join(job_dir, "resume_tailored.txt")
     tex_path = os.path.join(job_dir, "resume_tailored.tex")
+    pdf_path = os.path.join(job_dir, "resume_tailored.pdf")
 
     if not os.path.exists(txt_path):
         return False
 
     with open(txt_path, "r") as f:
         text = f.read()
+    text = re.sub(r"^(Here'?s?.*?:|Sure[,!].*?:|The (corrected|tailored|updated|revised).*?:)\s*\n","", text, flags=re.IGNORECASE).strip()
 
     tex = build_tex(text)
 
@@ -421,16 +445,95 @@ def process_job(job_dir: str, compile_pdf: bool = False):
 
     if compile_pdf:
         import subprocess
-        result = subprocess.run(
-            ["pdflatex", "-interaction=nonstopmode", "-output-directory", job_dir, tex_path],
-            capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            print(f"    ✓ PDF compiled successfully")
+
+        # Compile twice (LaTeX needs 2 passes for accurate layout)
+        for _ in range(2):
+            result = subprocess.run(
+                ["pdflatex", "-interaction=nonstopmode",
+                 "-output-directory", job_dir, tex_path],
+                capture_output=True, text=True
+            )
+
+        if os.path.exists(pdf_path):
+            # Check page count
+            page_count = _get_page_count(pdf_path)
+            if page_count and page_count > 1:
+                print(f"    ⚠ PDF is {page_count} pages — applying compression...")
+                _compress_to_one_page(tex_path, job_dir)
+            else:
+                print(f"    ✓ PDF compiled ({page_count} page)")
         else:
             print(f"    ✗ PDF compile failed — check {tex_path}")
 
     return True
+
+
+def _get_page_count(pdf_path: str) -> int:
+    """Count pages in PDF using pdfinfo or pypdf."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["pdfinfo", pdf_path],
+            capture_output=True, text=True
+        )
+        for line in result.stdout.splitlines():
+            if "Pages:" in line:
+                return int(line.split(":")[1].strip())
+    except Exception:
+        pass
+
+    try:
+        import pdfplumber
+        with pdfplumber.open(pdf_path) as pdf:
+            return len(pdf.pages)
+    except Exception:
+        pass
+
+    return None
+
+
+def _compress_to_one_page(tex_path: str, job_dir: str):
+    """Tighten spacing in .tex file to force one page, then recompile."""
+    with open(tex_path, "r") as f:
+        content = f.read()
+
+    # Tighten spacing progressively
+    replacements = [
+        (r"\vspace{-10pt}", r"\vspace{-14pt}"),
+        (r"\vspace{-15pt}", r"\vspace{-18pt}"),
+        (r"\vspace{-6pt}",  r"\vspace{-8pt}"),
+        (r"\vspace{-8pt}",  r"\vspace{-10pt}"),
+        (r"\vspace{-3pt}",  r"\vspace{-5pt}"),
+        (r"\vspace{2pt}",   r"\vspace{0pt}"),
+        (r"\vspace{4pt}",   r"\vspace{2pt}"),
+        (r"\vspace{-2pt}",  r"\vspace{-4pt}"),
+        (r"\vspace{-5pt}",  r"\vspace{-7pt}"),
+        (r"10.5pt",         r"10pt"),
+        (r"\addtolength{\topmargin}{-0.7in}", r"\addtolength{\topmargin}{-0.85in}"),
+        (r"\addtolength{\textheight}{1.6in}", r"\addtolength{\textheight}{1.9in}"),
+    ]
+
+    for old, new in replacements:
+        content = content.replace(old, new)
+
+    with open(tex_path, "w") as f:
+        f.write(content)
+
+    # Recompile
+    import subprocess
+    for _ in range(2):
+        subprocess.run(
+            ["pdflatex", "-interaction=nonstopmode",
+             "-output-directory", job_dir, tex_path],
+            capture_output=True, text=True
+        )
+
+    pdf_path = os.path.join(job_dir, "resume_tailored.pdf")
+    pages = _get_page_count(pdf_path)
+    if pages == 1:
+        print(f"    ✓ Compressed to 1 page successfully")
+    else:
+        print(f"    ⚠ Still {pages} pages — reduce content manually or lower font size further")
 
 
 def main():

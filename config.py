@@ -6,8 +6,59 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # ── YOUR BASE RESUME ───────────────────────────────────────────────────────
 RESUME_PDF_PATH = "my_resume.pdf"
 
+# def _load_resume(pdf_path: str) -> str:
+#     """Extract text from resume PDF automatically."""
+#     import os
+#     if not os.path.exists(pdf_path):
+#         raise FileNotFoundError(
+#             f"Resume PDF not found: {pdf_path}\n"
+#             f"Drop your resume PDF into the project folder and update RESUME_PDF_PATH in config.py"
+#         )
+#     try:
+#         import pdfplumber
+#         with pdfplumber.open(pdf_path) as pdf:
+#             pages = [page.extract_text() or "" for page in pdf.pages]
+#             return "\n".join(pages).strip()
+#     except ImportError:
+#         raise ImportError("Run: pip install pdfplumber")
+
+# BASE_RESUME = _load_resume(RESUME_PDF_PATH)
+
+def _clean_resume(text: str) -> str:
+    """Fix known issues in extracted resume text before AI uses it."""
+    fixes = [
+        # Fix date format — standardize to long month names
+        ("Jan ", "January "),
+        ("Feb ", "February "),
+        ("Mar ", "March "),
+        ("Apr ", "April "),
+        ("Jun ", "June "),
+        ("Jul ", "July "),
+        ("Aug ", "August "),
+        ("Sep ", "September "),
+        ("Oct ", "October "),
+        ("Nov ", "November "),
+        ("Dec ", "December "),
+
+        # GlobalRides — 4 distinct bullets covering different themes
+        ("Built predictive models using historical order data to forecast demand patterns",
+        "Forecasted demand patterns across 12 restaurants and 11 ride routes by applying time-series analysis on 260+ historical orders, improving resource allocation efficiency by 23%"),
+
+        ("Analyzed 260+ orders to identify customer segmentation",
+        "Segmented customers into behavioral cohorts using SQL aggregations, identifying that power users (15+ orders) generated $1,694 revenue at 4.2/5.0 satisfaction rating"),
+
+        ("Designed relational database with 26 normalized tables",
+        "Architected a 26-table MySQL relational database with Boyce-Codd Normal Form normalization, supporting concurrent food and ride operations across 12 restaurants and 11 ride routes"),
+
+        ("achieved 95%+ order fulfillment within SLA",
+        "Optimized query performance through indexing and structured joins, achieving 95%+ order fulfillment within Service Level Agreement windows"),
+    ]
+    for old, new in fixes:
+        text = text.replace(old, new)
+    return text
+
+
 def _load_resume(pdf_path: str) -> str:
-    """Extract text from resume PDF automatically."""
     import os
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(
@@ -18,7 +69,8 @@ def _load_resume(pdf_path: str) -> str:
         import pdfplumber
         with pdfplumber.open(pdf_path) as pdf:
             pages = [page.extract_text() or "" for page in pdf.pages]
-            return "\n".join(pages).strip()
+            text = "\n".join(pages).strip()
+            return _clean_resume(text)
     except ImportError:
         raise ImportError("Run: pip install pdfplumber")
 
@@ -134,9 +186,54 @@ JOB_SEARCH = {
         "data analyst",
         "python developer data science",
     ],
-    "location": "India",
+    "location":        "India",
     "max_per_platform": 10,
-} ##
+    "hours_old":        72,    # only fetch jobs posted in the last N hours
+}
+
+# ── Role clusters — resumes are cached per cluster to avoid redundant AI calls
+# Each cluster generates ONE tailored resume that is reused for similar roles.
+# Re-tailored automatically after CLUSTER_CACHE_DAYS days.
+CLUSTER_CACHE_DAYS = 7
+
+ROLE_CLUSTERS = {
+    "ml_ai": {
+        "label": "ML / AI Engineer",
+        "keywords": [
+            "data scientist", "machine learning engineer", "ml engineer",
+            "ai engineer", "nlp engineer", "deep learning engineer",
+            "applied scientist", "research scientist",
+        ],
+    },
+    "data_engineering": {
+        "label": "Data Engineer",
+        "keywords": [
+            "data engineer", "big data engineer", "analytics engineer",
+            "etl engineer", "platform engineer",
+        ],
+    },
+    "analytics_bi": {
+        "label": "Analytics / BI",
+        "keywords": [
+            "business intelligence engineer", "data analyst", "bi engineer",
+            "business analyst", "reporting analyst",
+        ],
+    },
+    "entry_ds": {
+        "label": "Entry-level Data Scientist",
+        "keywords": [
+            "associate data scientist", "junior data scientist",
+            "junior ml", "entry level data",
+        ],
+    },
+    "python_dev": {
+        "label": "Python Developer (DS)",
+        "keywords": [
+            "python developer data science", "python developer",
+            "software engineer data", "backend data",
+        ],
+    },
+}
 
 # ── Thresholds ─────────────────────────────────────────────────────────────
 FIT_SCORE_THRESHOLD   = 65   # Skip if Claude scores below this
@@ -150,33 +247,17 @@ PLATFORMS = {
     "internshala": True,
 }
 
-# ── Auto-apply (keep False until we test everything) ───────────────────────
-AUTO_APPLY = False
-HEADLESS   = True
+# ── Auto-apply ─────────────────────────────────────────────────────────────
+HEADLESS = False  # set True after sessions are saved
 
 # ── Credentials ────────────────────────────────────────────────────────────
-CREDENTIALS = {
-    "resumeworded": {
-        "email":    os.getenv("RESUMEWORDED_EMAIL", ""),
-        "password": os.getenv("RESUMEWORDED_PASSWORD", ""),
-    },
-    "linkedin": {
-        "email":    os.getenv("LINKEDIN_EMAIL", ""),
-        "password": os.getenv("LINKEDIN_PASSWORD", ""),
-    },
-    "naukri": {
-        "email":    os.getenv("NAUKRI_EMAIL", ""),
-        "password": os.getenv("NAUKRI_PASSWORD", ""),
-    },
-    "indeed": {
-        "email":    os.getenv("INDEED_EMAIL", ""),
-        "password": os.getenv("INDEED_PASSWORD", ""),
-    },
-    "internshala": {
-        "email":    os.getenv("INTERNSHALA_EMAIL", ""),
-        "password": os.getenv("INTERNSHALA_PASSWORD", ""),
-    },
-}
+# LinkedIn, Indeed, and Naukri use Google Sign-In — no password needed.
+# On first run with HEADLESS=False the bot will open a browser, prompt you
+# to log in manually (Google OAuth works), then save the session to:
+#   output/.linkedin_session.json
+#   output/.indeed_session.json
+# Subsequent runs reuse those saved sessions automatically.
+CREDENTIALS: dict = {}
 
 # ── Output ─────────────────────────────────────────────────────────────────
 DB_PATH    = "output/applications.db"
@@ -184,3 +265,23 @@ OUTPUT_DIR = "output/applications"
 # AI mode: "groq" (API, rate limited) or "ollama" (local, unlimited)
 AI_MODE = "ollama"
 
+# ── Applicant profile (used by auto-apply bots to fill forms) ──────────────
+PROFILE = {
+    "first_name":        "Navaneeta",
+    "last_name":         "Padmakumar",
+    "full_name":         "Navaneeta Padmakumar",
+    "email":             os.getenv("APPLY_EMAIL",    "nxp230016@utdallas.edu"),
+    "phone":             os.getenv("APPLY_PHONE",    "+19453389465"),
+    "city":              "Richardson",
+    "state":             "Texas",
+    "country":           "United States",
+    "linkedin_url":      "https://linkedin.com/in/navaneetapk",
+    "github_url":        "https://github.com/nxp0999",
+    "years_experience":  "4",
+    "notice_period":     "Immediate",
+    "salary_expected":   "",
+    "work_authorization": "Yes",
+    "visa_sponsorship":  "No",   # overridden per-job: "Yes" if job is outside India
+    "us_citizen":        "No",
+    "willing_to_relocate": "Yes",
+}
