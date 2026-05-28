@@ -1,5 +1,12 @@
 # Virtual environment
 venv/
+.venv/
+
+# Node dependencies
+node_modules/
+
+# Claude internal files
+.claude/
 
 # Output files (personal data)
 output/
@@ -9,6 +16,10 @@ output/
 
 # API keys and credentials (never push these)
 .env
+output/.credentials.enc
+output/.credentials.salt
+output/.linkedin_session.json
+output/.indeed_session.json
 
 # Python cache
 __pycache__/

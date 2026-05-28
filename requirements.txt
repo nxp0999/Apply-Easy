@@ -1,0 +1,27 @@
+# ── Core pipeline ──────────────────────────────────────────────────────────
+groq>=1.2.0                  # LLM API (scoring + tailoring)
+ollama>=0.6.2                # Local LLM via Ollama (mistral, etc.)
+python-jobspy>=1.1.82        # Job scraping (LinkedIn, Indeed, Naukri, Internshala)
+beautifulsoup4>=4.12.0       # HTML parsing used in scrapers
+pandas>=2.1.0                # Job dataframe handling
+requests>=2.31.0             # HTTP calls
+
+# ── Resume handling ─────────────────────────────────────────────────────────
+pdfplumber>=0.11.0           # Read base resume PDF → plain text
+
+# ── Security ────────────────────────────────────────────────────────────────
+cryptography>=42.0.0         # Fernet encryption for credential store (credentials.py)
+
+# ── Auto-apply bots ─────────────────────────────────────────────────────────
+playwright>=1.40.0           # Browser automation (LinkedIn, Indeed, ATS bots)
+
+# ── Dashboard server ────────────────────────────────────────────────────────
+flask>=3.0.0                 # Dashboard API server (dashboard.py)
+flask-cors>=4.0.0            # Allow React dev-server to call the API
+
+# ── CLI / output ────────────────────────────────────────────────────────────
+rich>=13.0.0                 # Terminal tables, progress bars, coloured output
+
+# ── Post-install step ────────────────────────────────────────────────────────
+# After pip install -r requirements.txt, run once:
+#   playwright install chromium

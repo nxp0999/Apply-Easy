@@ -42,7 +42,10 @@ def init_db():
             rw_scored_at     TEXT,
             applied          INTEGER DEFAULT 0,
             applied_at       TEXT,
-            notes            TEXT
+            notes            TEXT,
+            apply_type       TEXT,
+            apply_url_direct TEXT,
+            date_posted      TEXT
         )
     """)
     conn.commit()
@@ -51,15 +54,18 @@ def init_db():
 
 def migrate_db():
     rw_columns = [
-        ("rw_overall",     "INTEGER"),
-        ("rw_hard_skills", "INTEGER"),
-        ("rw_soft_skills", "INTEGER"),
-        ("rw_impact",      "INTEGER"),
-        ("rw_brevity",     "INTEGER"),
-        ("rw_style",       "INTEGER"),
-        ("rw_url",         "TEXT"),
-        ("rw_error",       "TEXT"),
-        ("rw_scored_at",   "TEXT"),
+        ("rw_overall",       "INTEGER"),
+        ("rw_hard_skills",   "INTEGER"),
+        ("rw_soft_skills",   "INTEGER"),
+        ("rw_impact",        "INTEGER"),
+        ("rw_brevity",       "INTEGER"),
+        ("rw_style",         "INTEGER"),
+        ("rw_url",           "TEXT"),
+        ("rw_error",         "TEXT"),
+        ("rw_scored_at",     "TEXT"),
+        ("apply_type",       "TEXT"),
+        ("apply_url_direct", "TEXT"),
+        ("date_posted",      "TEXT"),
     ]
     conn = get_conn()
     existing = {row[1] for row in conn.execute("PRAGMA table_info(applications)").fetchall()}
@@ -81,11 +87,14 @@ def insert_job(job: dict):
     conn = get_conn()
     conn.execute("""
         INSERT OR IGNORE INTO applications
-        (platform, job_id, title, company, location, apply_url, scraped_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        (platform, job_id, title, company, location, apply_url, apply_url_direct,
+         date_posted, scraped_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         job["platform"], job["job_id"], job["title"],
-        job["company"], job.get("location", ""), job.get("apply_url", ""),
+        job["company"], job.get("location", ""),
+        job.get("apply_url", ""), job.get("apply_url_direct", ""),
+        job.get("date_posted"),
         datetime.utcnow().isoformat()
     ))
     conn.commit()
@@ -182,5 +191,55 @@ def get_unscored():
 def get_all():
     conn = get_conn()
     rows = conn.execute("SELECT * FROM applications ORDER BY fit_score DESC").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def set_apply_type(job_id: str, apply_type: str, apply_url_direct: str = ""):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE applications SET apply_type=?, apply_url_direct=? WHERE job_id=?",
+        (apply_type, apply_url_direct, job_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_unclassified():
+    """Jobs that haven't been classified as easy/full_form yet."""
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT * FROM applications
+        WHERE apply_type IS NULL
+        ORDER BY scraped_at DESC
+    """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_easy_apply_pending():
+    """Jobs ready to auto-apply: easy apply, materials generated, not yet applied."""
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT * FROM applications
+        WHERE apply_type = 'easy'
+          AND tailored_resume IS NOT NULL
+          AND applied = 0
+        ORDER BY fit_score DESC
+    """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_full_form_pending():
+    """Full-form jobs with generated materials that haven't been applied to yet."""
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT * FROM applications
+        WHERE apply_type = 'full_form'
+          AND tailored_resume IS NOT NULL
+          AND applied = 0
+        ORDER BY fit_score DESC
+    """).fetchall()
     conn.close()
     return [dict(r) for r in rows]
