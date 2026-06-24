@@ -1,0 +1,65 @@
+{
+  "manifest_version": 3,
+  "name": "Apply Easy",
+  "version": "1.0.0",
+  "description": "Auto-fill job applications using your tailored resume and AI-generated answers.",
+
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+
+  "host_permissions": [
+    "http://localhost:8765/*",
+    "https://boards.greenhouse.io/*",
+    "https://app.greenhouse.io/*",
+    "https://jobs.lever.co/*",
+    "https://*.workday.com/*",
+    "https://*.myworkdayjobs.com/*",
+    "https://jobs.ashbyhq.com/*",
+    "https://jobs.smartrecruiters.com/*",
+    "https://*.indeed.com/*",
+    "https://*.linkedin.com/*",
+    "https://*.recruitee.com/*",
+    "https://*.jobvite.com/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://boards.greenhouse.io/*",
+        "https://app.greenhouse.io/*",
+        "https://jobs.lever.co/*",
+        "https://*.workday.com/*",
+        "https://*.myworkdayjobs.com/*",
+        "https://jobs.ashbyhq.com/*",
+        "https://jobs.smartrecruiters.com/*",
+        "https://*.indeed.com/apply*",
+        "https://*.indeed.com/viewjob*",
+        "https://*.linkedin.com/jobs/*",
+        "https://*.recruitee.com/*",
+        "https://*.jobvite.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["inject.css"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Apply Easy"
+  },
+
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.css"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

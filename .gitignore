@@ -16,6 +16,8 @@ output/
 
 # API keys and credentials (never push these)
 .env
+_local.py
+k8s/secret.yaml
 output/.credentials.enc
 output/.credentials.salt
 output/.linkedin_session.json
@@ -35,10 +37,17 @@ __pycache__/
 *.fdb_latexmk
 *.synctex.gz
 
+# Resume files (personal data — never commit)
+my_resume.pdf
+my_resume*.pdf
+my_resume.tex
+resumes/
+
+# MLflow experiment data (local only)
+mlruns/
+
 # OS files
 .DS_Store
-Groq-API_KEY.md
 ApplyEasy.sqbpro
-my_resume.pdf
 *.sqbpro
 Groq-API_KEY.md

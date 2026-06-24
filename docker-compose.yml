@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+
+  # ── Pipeline runner ─────────────────────────────────────────────────────────
+  pipeline:
+    build: .
+    image: apply-easy:latest
+    command: --discover
+    environment:
+      GROQ_API_KEY:       ${GROQ_API_KEY}
+      ANTHROPIC_API_KEY:  ${ANTHROPIC_API_KEY:-""}
+      MLFLOW_TRACKING_URI: http://mlflow:5001
+    volumes:
+      - ./output:/app/output        # persists DB + PDFs
+      - mlruns:/app/mlruns           # MLflow experiment data
+    depends_on:
+      - mlflow
+    restart: "no"                   # run once and exit (use CronJob for scheduling)
+
+  # ── MLflow tracking server ───────────────────────────────────────────────────
+  mlflow:
+    image: python:3.11-slim
+    command: >
+      bash -c "pip install mlflow -q &&
+               mlflow server
+               --backend-store-uri sqlite:////mlruns/mlflow.db
+               --default-artifact-root /mlruns/artifacts
+               --host 0.0.0.0
+               --port 5001"
+    ports:
+      - "5001:5001"
+    volumes:
+      - mlruns:/mlruns
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 10s
+      retries: 5
+
+  # ── Dashboard (optional) ─────────────────────────────────────────────────────
+  dashboard:
+    build: .
+    image: apply-easy:latest
+    command: ["python", "dashboard.py"]
+    environment:
+      GROQ_API_KEY: ${GROQ_API_KEY}
+    volumes:
+      - ./output:/app/output
+    ports:
+      - "5050:5050"
+    restart: unless-stopped
+
+volumes:
+  mlruns:

@@ -42,8 +42,8 @@ def _parse_json(text: str) -> dict:
 def score_fit(job: dict) -> dict:
     return _parse_json(_call(build_score_fit_prompt(job, BASE_RESUME)))
 
-def tailor_resume(job: dict) -> str:
-    return _call(build_tailor_prompt(job, BASE_RESUME))
+def tailor_resume(job: dict, missing_keywords: list = None) -> str:
+    return _call(build_tailor_prompt(job, BASE_RESUME, missing_keywords=missing_keywords))
 
 def score_tailored_resume(tailored: str) -> dict:
     return _parse_json(_call(build_score_tailored_prompt(tailored, BASE_RESUME)))

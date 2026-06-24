@@ -15,6 +15,9 @@ cryptography>=42.0.0         # Fernet encryption for credential store (credentia
 # ── Auto-apply bots ─────────────────────────────────────────────────────────
 playwright>=1.40.0           # Browser automation (LinkedIn, Indeed, ATS bots)
 
+# ── Experiment tracking ─────────────────────────────────────────────────────
+mlflow>=2.13.0               # Experiment tracking for --discover runs (mlflow ui to view)
+
 # ── Dashboard server ────────────────────────────────────────────────────────
 flask>=3.0.0                 # Dashboard API server (dashboard.py)
 flask-cors>=4.0.0            # Allow React dev-server to call the API

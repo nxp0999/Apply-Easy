@@ -14,6 +14,7 @@ from playwright.sync_api import sync_playwright
 
 from .base import BaseApplicator
 from credentials import cred_store
+from config import LINKEDIN_EMAIL as LOGIN_EMAIL, LINKEDIN_PASSWORD as LOGIN_PASSWORD
 
 logger = logging.getLogger(__name__)
 
@@ -93,24 +94,25 @@ class LinkedInApplicator(BaseApplicator):
         if "/feed" in page.url:
             return True
 
-        # Session missing or expired — need manual login (supports Google OAuth)
-        if self.headless:
-            logger.error(
-                "LinkedIn session not found. Set HEADLESS=False in config.py, "
-                "then run once to complete login manually."
-            )
+        # Session missing or expired — auto-login with stored credentials
+        if not LOGIN_EMAIL or not LOGIN_PASSWORD:
+            logger.error("No login credentials found. Add EMAIL/PASSWORD to _local.py")
             return False
 
-        print("\n[LinkedIn] Not logged in — opening login page.")
-        print("Sign in using Google or any method, then return here and press Enter.\n")
-        page.goto(_LOGIN_URL)
-        input("Press Enter after you reach your LinkedIn feed → ")
-        if "/login" not in page.url and "linkedin.com" in page.url:
+        logger.info("[LinkedIn] Session expired — auto-logging in with stored credentials")
+        page.goto(_LOGIN_URL, wait_until="domcontentloaded", timeout=15000)
+        page.wait_for_timeout(1000)
+        try:
+            page.fill('input[name="session_key"]',      LOGIN_EMAIL)
+            page.fill('input[name="session_password"]', LOGIN_PASSWORD)
+            page.click('button[type="submit"]')
+            page.wait_for_url("**/feed**", timeout=15000)
             self._save_session(context)
-            logger.info("LinkedIn session saved — future runs will skip login.")
+            logger.info("LinkedIn auto-login successful — session saved.")
             return True
-        logger.error("LinkedIn login did not complete. Try again with HEADLESS=False.")
-        return False
+        except Exception as e:
+            logger.error(f"LinkedIn auto-login failed: {e}")
+            return False
 
     # ── Form walking ──────────────────────────────────────────────────────────
 

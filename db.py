@@ -45,7 +45,10 @@ def init_db():
             notes            TEXT,
             apply_type       TEXT,
             apply_url_direct TEXT,
-            date_posted      TEXT
+            date_posted      TEXT,
+            salary_min       INTEGER,
+            salary_max       INTEGER,
+            description      TEXT
         )
     """)
     conn.commit()
@@ -66,6 +69,9 @@ def migrate_db():
         ("apply_type",       "TEXT"),
         ("apply_url_direct", "TEXT"),
         ("date_posted",      "TEXT"),
+        ("salary_min",       "INTEGER"),
+        ("salary_max",       "INTEGER"),
+        ("description",      "TEXT"),
     ]
     conn = get_conn()
     existing = {row[1] for row in conn.execute("PRAGMA table_info(applications)").fetchall()}
@@ -88,14 +94,16 @@ def insert_job(job: dict):
     conn.execute("""
         INSERT OR IGNORE INTO applications
         (platform, job_id, title, company, location, apply_url, apply_url_direct,
-         date_posted, scraped_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         date_posted, salary_min, salary_max, scraped_at, description)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         job["platform"], job["job_id"], job["title"],
         job["company"], job.get("location", ""),
         job.get("apply_url", ""), job.get("apply_url_direct", ""),
         job.get("date_posted"),
-        datetime.utcnow().isoformat()
+        job.get("salary_min"), job.get("salary_max"),
+        datetime.utcnow().isoformat(),
+        job.get("description", ""),
     ))
     conn.commit()
     conn.close()

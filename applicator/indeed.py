@@ -17,6 +17,7 @@ from playwright.sync_api import sync_playwright
 
 from .base import BaseApplicator
 from credentials import cred_store
+from config import INDEED_EMAIL as LOGIN_EMAIL, INDEED_PASSWORD as LOGIN_PASSWORD
 
 logger = logging.getLogger(__name__)
 
@@ -93,27 +94,55 @@ class IndeedApplicator(BaseApplicator):
             pass
 
     def _ensure_logged_in(self, page, context) -> bool:
-        # Navigate to a page that requires auth — Indeed redirects to login if not logged in
+        # Navigate to a page that requires auth
         page.goto("https://www.indeed.com/myjobs", wait_until="domcontentloaded", timeout=20000)
-        page.wait_for_timeout(2500)  # allow any auth redirects to settle
+        page.wait_for_timeout(2000)
         if "indeed.com/myjobs" in page.url or "indeed.com/myresumes" in page.url:
-            return True  # stayed on protected page → we're logged in
+            return True
 
-        # Session missing or expired — need manual login (supports Google OAuth)
-        if self.headless:
-            logger.error(
-                "Indeed session not found. Set HEADLESS=False in config.py, "
-                "then run once to complete login manually."
-            )
+        # ── Auto-login with email + password ──────────────────────────────────
+        if LOGIN_EMAIL and LOGIN_PASSWORD:
+            logger.info("[Indeed] Session expired — auto-logging in")
+            try:
+                page.goto(_LOGIN_URL, wait_until="domcontentloaded", timeout=15000)
+                page.wait_for_timeout(800)
+                page.fill('input[name="__email"], input[type="email"]', LOGIN_EMAIL)
+                page.click('button[type="submit"], button:has-text("Continue")')
+                page.wait_for_timeout(1500)
+                page.fill('input[name="__password"], input[type="password"]', LOGIN_PASSWORD)
+                page.click('button[type="submit"], button:has-text("Sign in")')
+                page.wait_for_timeout(3000)
+                if "indeed.com/myjobs" in page.url or "indeed.com" in page.url:
+                    self._save_session(context)
+                    logger.info("[Indeed] Auto-login successful — session saved.")
+                    return True
+                logger.error("[Indeed] Auto-login failed — check credentials in _local.py")
+                return False
+            except Exception as e:
+                logger.error(f"[Indeed] Auto-login failed: {e}")
+                return False
+
+        # ── Manual login (Google OAuth or any SSO) ────────────────────────────
+        # No email/password set — open the login page and wait for the user to
+        # sign in manually (e.g. "Continue with Google"). Session is saved after.
+        logger.info(
+            "[Indeed] No credentials set — opening browser for manual login.\n"
+            "         Sign in via Google (or any method), then wait — session will save automatically."
+        )
+        page.goto(_LOGIN_URL, wait_until="domcontentloaded", timeout=15000)
+        try:
+            # Poll every 3 s for up to 2 minutes
+            for _ in range(40):
+                page.wait_for_timeout(3000)
+                if "indeed.com/myjobs" in page.url or "indeed.com/myresumes" in page.url:
+                    self._save_session(context)
+                    logger.info("[Indeed] Manual login detected — session saved. Future runs will be silent.")
+                    return True
+            logger.error("[Indeed] Timed out waiting for manual login (2 min).")
             return False
-
-        print("\n[Indeed] Not logged in — opening login page.")
-        print("Sign in using Google or any method, then return here and press Enter.\n")
-        page.goto(_LOGIN_URL)
-        input("Press Enter after you are signed in to Indeed → ")
-        self._save_session(context)
-        logger.info("Indeed session saved — future runs will skip login.")
-        return True
+        except Exception as e:
+            logger.error(f"[Indeed] Manual login wait failed: {e}")
+            return False
 
     # ── Form walking ──────────────────────────────────────────────────────────
 

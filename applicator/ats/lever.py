@@ -45,7 +45,7 @@ class LeverApplicator(BaseApplicator):
                 self._safe_fill(page, 'input[name="email"]', self.profile["email"])
                 self._safe_fill(page, 'input[name="phone"]', self.profile["phone"])
                 # "org" = current company / most recent employer
-                self._safe_fill(page, 'input[name="org"]',   "Datanimbus Technologies")
+                self._safe_fill(page, 'input[name="org"]',   self.profile.get("current_company", ""))
                 self._safe_fill(page, 'input[name*="linkedin"]', self.profile["linkedin_url"])
                 self._safe_fill(page, 'input[name*="github"]',   self.profile["github_url"])
                 self._safe_fill(page, 'input[name*="website"]',  self.profile["linkedin_url"])

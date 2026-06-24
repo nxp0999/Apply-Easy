@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: apply-easy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      containers:
+        - name: mlflow
+          image: python:3.11-slim
+          command:
+            - bash
+            - -c
+            - "pip install mlflow -q && mlflow server --backend-store-uri sqlite:////mlruns/mlflow.db --default-artifact-root /mlruns/artifacts --host 0.0.0.0 --port 5001"
+          ports:
+            - containerPort: 5001
+          volumeMounts:
+            - name: mlruns-storage
+              mountPath: /mlruns
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "250m"
+      volumes:
+        - name: mlruns-storage
+          persistentVolumeClaim:
+            claimName: apply-easy-mlruns-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-service
+  namespace: apply-easy
+spec:
+  selector:
+    app: mlflow
+  ports:
+    - port: 5001
+      targetPort: 5001
+  type: ClusterIP

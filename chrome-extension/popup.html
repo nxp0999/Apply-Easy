@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Apply Easy</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="header-logo">⚡ Apply Easy</div>
+      <div id="status-dot" class="dot dot-checking" title="Checking connection…"></div>
+    </header>
+
+    <div id="filters">
+      <input id="search" type="text" placeholder="Search title or company…" />
+      <div class="filter-row">
+        <select id="filter-role">
+          <option value="">All roles</option>
+          <option value="ml_ai">ML / AI</option>
+          <option value="data_engineering">Data Engineering</option>
+          <option value="analytics_bi">Analytics / BI</option>
+          <option value="entry_ds">Entry DS</option>
+          <option value="python_dev">Python Dev</option>
+        </select>
+        <select id="filter-platform">
+          <option value="">All platforms</option>
+          <option value="linkedin">LinkedIn</option>
+          <option value="indeed">Indeed</option>
+        </select>
+      </div>
+      <div class="filter-row">
+        <label class="filter-label">Min fit %</label>
+        <input id="filter-fit" type="number" min="0" max="100" placeholder="0" style="width:56px" />
+        <label class="filter-label" style="margin-left:8px">Apply type</label>
+        <select id="filter-type" style="flex:1">
+          <option value="">All</option>
+          <option value="easy">Easy</option>
+          <option value="full_form">Full form</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="job-list-header">
+      <span id="job-count">Loading…</span>
+      <button id="btn-refresh" class="btn-icon" title="Refresh">↺</button>
+    </div>
+
+    <div id="job-list"></div>
+
+    <footer>
+      <a href="http://localhost:8765" target="_blank">Open Dashboard ↗</a>
+    </footer>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
