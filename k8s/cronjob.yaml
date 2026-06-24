@@ -1,0 +1,59 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: apply-easy-discover
+  namespace: apply-easy
+spec:
+  # Runs daily at 9:00 AM UTC — adjust timezone as needed
+  schedule: "0 9 * * *"
+  concurrencyPolicy: Forbid        # never overlap two runs
+  successfulJobsHistoryLimit: 7    # keep last 7 days of logs
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1              # retry once on failure
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: pipeline
+              image: apply-easy:latest   # push to your registry, e.g. ghcr.io/nxp0999/apply-easy:latest
+              imagePullPolicy: IfNotPresent
+              args: ["--discover"]
+
+              envFrom:
+                - configMapRef:
+                    name: apply-easy-config
+              env:
+                - name: GROQ_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: apply-easy-secrets
+                      key: GROQ_API_KEY
+                - name: ANTHROPIC_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: apply-easy-secrets
+                      key: ANTHROPIC_API_KEY
+
+              volumeMounts:
+                - name: output-storage
+                  mountPath: /app/output
+                - name: mlruns-storage
+                  mountPath: /app/mlruns
+
+              resources:
+                requests:
+                  memory: "512Mi"
+                  cpu: "250m"
+                limits:
+                  memory: "1Gi"
+                  cpu: "500m"
+
+          volumes:
+            - name: output-storage
+              persistentVolumeClaim:
+                claimName: apply-easy-output-pvc
+            - name: mlruns-storage
+              persistentVolumeClaim:
+                claimName: apply-easy-mlruns-pvc

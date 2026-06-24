@@ -9,15 +9,16 @@ Run:
     open http://localhost:8765
 """
 
+import glob
 import os
 import sqlite3
 import subprocess
 import time
 
-from flask import Flask, Response, jsonify, send_from_directory, stream_with_context
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory, stream_with_context
 from flask_cors import CORS
 
-from config import DB_PATH
+from config import DB_PATH, OUTPUT_DIR, PROFILE
 
 LOG_PATH = "output/run.log"
 
@@ -100,6 +101,117 @@ def api_logs():
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.route("/api/profile")
+def api_profile():
+    """Expose applicant profile for the Chrome extension form-filler."""
+    return jsonify(PROFILE)
+
+
+@app.route("/api/pending-jobs")
+def api_pending_jobs():
+    """All jobs with generated materials not yet applied — for extension popup."""
+    jobs = _query("""
+        SELECT job_id, platform, title, company, location,
+               apply_url, apply_url_direct, fit_score, apply_type,
+               date_posted, salary_min, salary_max
+        FROM applications
+        WHERE tailored_resume IS NOT NULL
+          AND applied = 0
+        ORDER BY fit_score DESC
+        LIMIT 100
+    """)
+    return jsonify(jobs)
+
+
+@app.route("/api/job-by-url")
+def api_job_by_url():
+    """Find the best-matching DB job for a given page URL (used by content.js)."""
+    url = request.args.get("url", "")
+    if not url:
+        return jsonify({"error": "url param required"}), 400
+    # strip query params for matching
+    base = url.split("?")[0]
+    rows = _query("""
+        SELECT * FROM applications
+        WHERE (apply_url      LIKE ? OR apply_url_direct LIKE ?)
+          AND applied = 0
+        ORDER BY fit_score DESC
+        LIMIT 1
+    """, (f"%{base}%", f"%{base}%"))
+    if rows:
+        return jsonify(rows[0])
+    return jsonify({"error": "not found"}), 404
+
+
+@app.route("/api/pdf/<job_id>")
+def api_pdf(job_id):
+    """Serve the tailored PDF for a job (extension uploads it to file inputs)."""
+    job_dir = os.path.join(OUTPUT_DIR, job_id)
+    # Try named PDF first, fall back to resume_tailored.pdf
+    named = sorted(glob.glob(os.path.join(job_dir, "*.pdf")))
+    named = [p for p in named if "tailored" not in os.path.basename(p) or p.endswith("resume_tailored.pdf")]
+    pdf_path = named[0] if named else os.path.join(job_dir, "resume_tailored.pdf")
+    if not os.path.exists(pdf_path):
+        return jsonify({"error": "pdf not found"}), 404
+    return send_file(pdf_path, mimetype="application/pdf",
+                     as_attachment=True,
+                     download_name=os.path.basename(pdf_path))
+
+
+@app.route("/api/fill-field", methods=["POST"])
+def api_fill_field():
+    """Ask Ollama/Claude to generate an answer for a specific form field."""
+    data    = request.get_json(force=True)
+    label   = data.get("label", "")
+    job_id  = data.get("job_id", "")
+    context = data.get("context", "")
+
+    row = _query_one("SELECT * FROM applications WHERE job_id=?", (job_id,))
+    if not row:
+        return jsonify({"error": "job not found"}), 404
+
+    try:
+        from config import BASE_RESUME
+        prompt = f"""You are filling a job application form field.
+
+Job: {row.get('title','')} at {row.get('company','')}
+Field label: "{label}"
+Page context: {context}
+
+Candidate background:
+{BASE_RESUME[:1800]}
+
+Rules:
+- Answer ONLY the field described by the label
+- Use specific numbers and achievements from the candidate background
+- Never fabricate metrics not in the background above
+- Keep answer under 120 words
+- Write in first person, professional tone
+- Output ONLY the answer text, nothing else"""
+
+        from pipeline.ollama_tasks import _call
+        answer = _call(prompt).strip()
+        return jsonify({"answer": answer})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/mark-applied/<job_id>", methods=["POST"])
+def api_mark_applied(job_id):
+    """Mark a job as applied (called by extension after form submit)."""
+    data  = request.get_json(force=True) or {}
+    notes = data.get("notes", "Applied via Chrome extension")
+    conn  = sqlite3.connect(DB_PATH)
+    from datetime import datetime
+    conn.execute(
+        "UPDATE applications SET applied=1, applied_at=?, notes=? WHERE job_id=?",
+        (datetime.utcnow().isoformat(), notes, job_id)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/run/<cmd>", methods=["POST"])

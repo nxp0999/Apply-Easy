@@ -14,7 +14,7 @@ import os
 import shutil
 from datetime import datetime, timedelta
 
-from config import CLUSTER_CACHE_DAYS, OUTPUT_DIR, ROLE_CLUSTERS
+from config import APPROVED_RESUMES_DIR, CLUSTER_CACHE_DAYS, OUTPUT_DIR, ROLE_CLUSTERS
 
 _CACHE_DIR = os.path.join(os.path.dirname(OUTPUT_DIR), "output", "cluster_resumes")
 
@@ -92,6 +92,88 @@ def copy_cluster_pdf(cluster: str, dest_dir: str, pdf_name: str) -> bool:
     shutil.copy(src, os.path.join(dest_dir, "resume_tailored.pdf"))
     shutil.copy(src, os.path.join(dest_dir, pdf_name))
     return True
+
+
+def get_approved_resume(cluster: str) -> str | None:
+    """
+    Return the hand-approved resume text from resumes/<cluster>.txt, or None.
+    These files are NEVER auto-overwritten — edit them manually to update.
+    """
+    path = os.path.join(APPROVED_RESUMES_DIR, f"{cluster}.txt")
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        text = f.read().strip()
+    return text if text else None
+
+
+def promote_to_approved(cluster: str, text: str | None = None) -> str:
+    """
+    Copy the current cluster cache resume into resumes/<cluster>.txt,
+    making it the hand-approved version for this cluster.
+    Pass text directly to promote an arbitrary string instead.
+    Returns the path of the approved file.
+    """
+    os.makedirs(APPROVED_RESUMES_DIR, exist_ok=True)
+    dest = os.path.join(APPROVED_RESUMES_DIR, f"{cluster}.txt")
+    if text is None:
+        cached = get_cached_resume(cluster)
+        if not cached:
+            raise FileNotFoundError(
+                f"No cached resume for cluster '{cluster}' — run --process first."
+            )
+        text = cached
+    with open(dest, "w") as f:
+        f.write(text)
+    # Also copy PDF if present
+    pdf_src  = os.path.join(_cluster_dir(cluster), "resume_tailored.pdf")
+    pdf_dest = os.path.join(APPROVED_RESUMES_DIR, f"{cluster}.pdf")
+    if os.path.exists(pdf_src) and not os.path.exists(pdf_dest):
+        shutil.copy(pdf_src, pdf_dest)
+    return dest
+
+
+def list_all_resumes() -> list[dict]:
+    """
+    Return the full resume status for every cluster:
+      source: 'approved' | 'cached' | 'none'
+      age_days: int | None
+      stale: bool
+    """
+    result = []
+    for cluster_key, info in ROLE_CLUSTERS.items():
+        approved_path = os.path.join(APPROVED_RESUMES_DIR, f"{cluster_key}.txt")
+        meta_path     = os.path.join(_CACHE_DIR, cluster_key, "meta.json")
+        pdf_approved  = os.path.join(APPROVED_RESUMES_DIR, f"{cluster_key}.pdf")
+        pdf_cached    = os.path.join(_CACHE_DIR, cluster_key, "resume_tailored.pdf")
+
+        has_approved = os.path.exists(approved_path)
+        has_cached   = os.path.exists(meta_path)
+
+        if has_approved:
+            mtime    = datetime.fromtimestamp(os.path.getmtime(approved_path))
+            age_days = (datetime.now() - mtime).days
+            source   = "approved"
+        elif has_cached:
+            with open(meta_path) as f:
+                meta = json.load(f)
+            mtime    = datetime.fromisoformat(meta.get("generated_at", "2000-01-01"))
+            age_days = (datetime.now() - mtime).days
+            source   = "cached"
+        else:
+            age_days = None
+            source   = "none"
+
+        result.append({
+            "cluster":      cluster_key,
+            "label":        info["label"],
+            "source":       source,
+            "age_days":     age_days,
+            "stale":        source == "cached" and (age_days or 0) >= CLUSTER_CACHE_DAYS,
+            "has_pdf":      os.path.exists(pdf_approved) or os.path.exists(pdf_cached),
+            "approved_pdf": os.path.exists(pdf_approved),
+        })
+    return result
 
 
 def cache_status() -> list[dict]:

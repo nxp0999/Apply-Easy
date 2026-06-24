@@ -1,6 +1,10 @@
 import hashlib
 from jobspy import scrape_jobs
-from config import JOB_SEARCH
+from config import JOB_SEARCH, JOB_BOARDS
+
+# JobSpy-supported platforms only (wellfound/cutshort use separate scrapers)
+_JOBSPY_SUPPORTED = {"linkedin", "naukri", "google", "glassdoor"}
+_ACTIVE_PLATFORMS  = [p for p in JOB_BOARDS if p in _JOBSPY_SUPPORTED] or ["linkedin", "naukri"]
 
 
 def _make_job_id(platform, url):
@@ -13,10 +17,10 @@ def scrape_all(max_jobs=None):
     all_jobs  = []
 
     for keyword in JOB_SEARCH["keywords"][:5]:
-        print(f"\n[Scraper] Searching: '{keyword}' (last {hours_old}h)")
+        print(f"\n[Scraper] Searching: '{keyword}' on {_ACTIVE_PLATFORMS} (last {hours_old}h)")
         try:
             df = scrape_jobs(
-                site_name=["indeed", "linkedin"],
+                site_name=_ACTIVE_PLATFORMS,
                 search_term=keyword,
                 location=JOB_SEARCH.get("location", "India"),
                 results_wanted=max_jobs,
@@ -31,7 +35,14 @@ def scrape_all(max_jobs=None):
             for _, row in df.iterrows():
                 url         = str(row.get("job_url") or "")
                 url_direct  = str(row.get("job_url_direct") or "")
-                platform    = "linkedin" if "linkedin.com" in url else "indeed"
+                if "linkedin.com" in url:
+                    platform = "linkedin"
+                elif "naukri.com" in url:
+                    platform = "naukri"
+                elif "google.com/search" in url or "google.com/jobs" in url:
+                    platform = "google"
+                else:
+                    platform = str(row.get("site") or "unknown")
                 title       = str(row.get("title") or "Unknown")
                 company     = str(row.get("company") or "Unknown")
                 location    = str(row.get("location") or "India")
@@ -44,6 +55,15 @@ def scrape_all(max_jobs=None):
                     if raw_date is not None and not (isinstance(raw_date, float))
                     else None
                 )
+                # Capture salary range when available
+                def _safe_num(v):
+                    try:
+                        f = float(v)
+                        return int(f) if f == f else None  # NaN check
+                    except (TypeError, ValueError):
+                        return None
+                salary_min = _safe_num(row.get("min_amount"))
+                salary_max = _safe_num(row.get("max_amount"))
 
                 all_jobs.append({
                     "platform":         platform,
@@ -56,6 +76,8 @@ def scrape_all(max_jobs=None):
                     "description":      description,
                     "easy_apply":       easy_apply,
                     "date_posted":      date_posted,
+                    "salary_min":       salary_min,
+                    "salary_max":       salary_max,
                 })
 
         except Exception as e:

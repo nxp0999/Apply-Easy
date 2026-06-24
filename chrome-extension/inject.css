@@ -1,0 +1,170 @@
+/* Apply Easy injected panel styles — scoped to #ae-panel */
+
+#ae-panel {
+  position: fixed;
+  top: 80px;
+  right: 0;
+  width: 320px;
+  max-height: calc(100vh - 100px);
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  border-radius: 12px 0 0 12px;
+  box-shadow: -4px 0 24px rgba(0,0,0,0.4);
+  z-index: 2147483647;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: transform 0.25s ease;
+}
+
+#ae-panel.ae-minimized {
+  transform: translateX(284px);
+}
+
+#ae-header {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+#ae-header .ae-logo {
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.5px;
+}
+
+#ae-header .ae-toggle {
+  background: rgba(255,255,255,0.2);
+  border: none;
+  color: white;
+  border-radius: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+#ae-body {
+  overflow-y: auto;
+  flex: 1;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ae-job-card {
+  background: #1e293b;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.ae-job-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: #f1f5f9;
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ae-job-company {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.ae-fit-badge {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.ae-fit-high  { background: #166534; color: #bbf7d0; }
+.ae-fit-mid   { background: #854d0e; color: #fef08a; }
+.ae-fit-low   { background: #7f1d1d; color: #fecaca; }
+
+.ae-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: #64748b;
+  margin-top: 4px;
+}
+
+.ae-btn {
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  transition: opacity 0.15s;
+}
+.ae-btn:hover { opacity: 0.85; }
+.ae-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.ae-btn-primary   { background: #6366f1; color: white; }
+.ae-btn-secondary { background: #1e40af; color: white; }
+.ae-btn-success   { background: #166534; color: #bbf7d0; }
+.ae-btn-warning   { background: #92400e; color: #fef3c7; }
+.ae-btn-danger    { background: #991b1b; color: #fee2e2; }
+
+.ae-log {
+  background: #020617;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 11px;
+  font-family: 'Menlo', 'Monaco', monospace;
+  max-height: 140px;
+  overflow-y: auto;
+  color: #94a3b8;
+  line-height: 1.6;
+}
+
+.ae-log .ae-ok   { color: #4ade80; }
+.ae-log .ae-warn { color: #facc15; }
+.ae-log .ae-err  { color: #f87171; }
+
+.ae-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: ae-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes ae-spin {
+  to { transform: rotate(360deg); }
+}
+
+.ae-divider {
+  border: none;
+  border-top: 1px solid #1e293b;
+  margin: 2px 0;
+}
+
+.ae-status-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #64748b;
+  padding: 2px 0;
+}
+.ae-status-row span:last-child { color: #94a3b8; }

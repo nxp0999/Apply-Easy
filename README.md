@@ -1,23 +1,23 @@
 # Apply Easy — Automated Job Application Pipeline
-### Powered by Groq (Llama 3.1) + Ollama (Mistral) + JobSpy + Playwright + pdflatex
+
+> **Stack:** Python · JobSpy · Greenhouse/Ashby/Lever APIs · Playwright · Groq (Llama 3) · Ollama · MLflow · Docker · Kubernetes · SQLite · Flask · React
 
 ---
 
 ## What This Does
 
-Apply Easy is a fully automated job application pipeline that:
+Apply Easy is an end-to-end automated job application system. Given a LaTeX resume it:
 
-1. **Scrapes** job listings from LinkedIn and Indeed (India) via JobSpy
-2. **Classifies** each job as Easy Apply, Full Form, or Unknown
-3. **Scores** each job for fit against your resume using AI (0–100)
-4. **Tailors** your resume bullets to match each job description
-5. **Quality-checks** the tailored resume for factual accuracy and ATS strength
-6. **Generates** a personalized cover letter per job
-7. **Drafts** a cold outreach email to the hiring manager
-8. **Generates** a `.tex` file in your exact Overleaf resume format
-9. **Compiles** it to a pixel-perfect PDF using pdflatex (identical output to Overleaf)
-10. **Tracks** every application in a local SQLite database with a live web dashboard
-11. **Auto-applies** via Playwright browser automation (LinkedIn Easy Apply, Indeed, Naukri, Internshala) *(Phase 4 — in progress)*
+1. **Scrapes** jobs from LinkedIn, Indeed, Naukri (via JobSpy) **and** 22 company career portals directly (Greenhouse, Ashby, Lever APIs) — targeting Flipkart, Razorpay, Atlassian, Databricks, Freshworks, etc.
+2. **Filters** dead/irrelevant listings before any AI runs — ghost jobs, stale postings (>21 days), wrong location, off-target titles, blacklisted companies
+3. **Scores** every surviving job 0–100 using deterministic rule-based scoring (zero LLM cost)
+4. **Deep-evaluates** the top 10 jobs (score ≥ 75) with a Groq LLM: CV match table + 2 STAR interview stories per role
+5. **Shows** a tiered shortlist with per-job gap mitigation tips (what to add to your resume for each role)
+6. **Tailors** resume bullets per job, generates a cover letter and outreach email
+7. **Renders** a PDF resume via Playwright/Chromium → A4 PDF (no pdflatex required)
+8. **Auto-applies** via Playwright bots (LinkedIn Easy Apply, Indeed, Greenhouse, Lever, Ashby)
+9. **Tracks** all experiments with MLflow — compare scoring thresholds across runs
+10. **Runs unattended** as a Kubernetes CronJob (daily 9am UTC)
 
 ---
 
@@ -25,488 +25,249 @@ Apply Easy is a fully automated job application pipeline that:
 
 ```
 Apply Easy/
-├── config.py                  <- Your resume, API keys, job keywords, thresholds
-├── main.py                    <- Orchestrator — run this
-├── db.py                      <- SQLite database layer
-├── dashboard.py               <- Flask API server + React SPA host
-├── generate_tex.py            <- Converts resume_tailored.txt to .tex (Overleaf format)
-├── resume_rules.py            <- Canonical ATS rules, strong verbs, prompt builders
-├── check_resume.py            <- Local ATS quality checker (simulation)
-├── requirements.txt
+├── Dockerfile                    <- Container image (Python + Playwright/Chromium)
+├── docker-compose.yml            <- Pipeline + MLflow UI + Dashboard as services
+├── Makefile                      <- make setup / run / prep / apply / status
+├── run.sh                        <- Single-command install + run (no make needed)
+├── k8s/                          <- Kubernetes manifests
+│   ├── cronjob.yaml              <- Daily CronJob (9am UTC)
+│   ├── mlflow-deployment.yaml    <- MLflow tracking server Deployment + Service
+│   ├── configmap.yaml            <- Non-secret config
+│   ├── storage.yaml              <- PersistentVolumeClaims (output + mlruns)
+│   ├── namespace.yaml
+│   └── secret.yaml.template      <- Fill in API keys, then apply
+├── _local.py                     <- Secrets (gitignored)
+├── config.py                     <- Thresholds, keywords, role clusters, paths
+├── main.py                       <- Pipeline orchestrator + CLI
+├── db.py                         <- SQLite schema, migrations, CRUD
+├── dashboard.py                  <- Flask API (port 5050) + SSE log stream
+├── generate_html_pdf.py          <- Playwright HTML → A4 PDF (replaces pdflatex)
+├── resume_rules.py               <- LLM prompt builders (tailor, cover letter, outreach)
+├── credentials.py                <- Fernet-encrypted session store
+├── filters.py                    <- Pre-scoring gates (ghost job, stale, location, etc.)
 ├── scrapers/
-│   ├── __init__.py
-│   ├── jobspy_scraper.py      <- Unified scraper (LinkedIn + Indeed via JobSpy)
-│   ├── naukri.py              <- Naukri scraper (wired in future phase)
-│   └── internshala.py        <- Internshala scraper (wired in future phase)
+│   ├── jobspy_scraper.py         <- LinkedIn / Indeed / Naukri via python-jobspy
+│   └── ats_scraper.py            <- 22 companies via Greenhouse / Ashby / Lever APIs
 ├── pipeline/
-│   ├── __init__.py
-│   ├── claude_tasks.py        <- AI calls via Groq (fit score, tailor, cover letter, email)
-│   ├── ollama_tasks.py        <- AI calls via Ollama local (same tasks, no rate limits)
-│   └── apply_detector.py     <- Classifies jobs as easy / full_form / unknown
+│   ├── rule_scorer.py            <- Deterministic 0–100 fit scorer (zero LLM)
+│   ├── deep_eval.py              <- LLM deep eval: CV match + STAR stories (top 10 jobs)
+│   ├── experiment_tracker.py     <- MLflow: log params + metrics per --discover run
+│   ├── tex_parser.py             <- my_resume.tex → clean plain text (BASE_RESUME)
+│   ├── claude_tasks.py           <- Groq API: tailor, cover letter, outreach email
+│   ├── ollama_tasks.py           <- Ollama local LLM: same tasks
+│   ├── apply_detector.py         <- Classifies jobs: easy / full_form / unknown
+│   ├── cluster_cache.py          <- Resume variant cache per role cluster
+│   └── role_detector.py          <- Ranks top N roles from resume
 ├── applicator/
-│   ├── __init__.py
-│   └── apply.py               <- Playwright auto-submit (Phase 4 — in progress)
-├── apply-easy/                <- React frontend
-│   ├── package.json
-│   ├── public/
-│   └── src/
-│       ├── App.js             <- Root component
-│       ├── App.css            <- Dark theme styles
-│       ├── api.js             <- Fetch wrappers for /api/jobs and /api/stats
-│       ├── StatsCards.js      <- Summary stat cards (6 metrics)
-│       ├── FitScoreDistributionChart.js  <- ApexCharts bar chart
-│       ├── JobsByPlatformChart.js        <- ApexCharts donut chart
-│       └── ApplicationsTable.js         <- Sortable, filterable jobs table
-└── output/
-    ├── run.log                <- Full pipeline log (for cron debugging)
-    ├── pipeline.lock          <- PID lock — prevents concurrent runs
-    └── applications/
-        └── <job_id>/
-            ├── resume_tailored.txt      <- AI-tailored resume (plain text)
-            ├── resume_tailored.tex      <- LaTeX version (your Overleaf template)
-            ├── resume_tailored.pdf      <- Compiled PDF (identical to Overleaf output)
-            ├── cover_letter.txt         <- Personalized cover letter
-            ├── outreach_email.txt       <- Cold email (subject + body)
-            └── fit_report.json          <- Fit score + resume quality breakdown
+│   ├── base.py                   <- BaseApplicator + field inference
+│   ├── linkedin.py               <- LinkedIn Easy Apply Playwright bot
+│   ├── indeed.py                 <- Indeed Apply Playwright bot
+│   └── ats/
+│       ├── greenhouse.py         <- Greenhouse.io Playwright bot
+│       ├── lever.py              <- Lever.co Playwright bot
+│       └── ashby.py              <- Ashby HQ Playwright bot
+├── chrome-extension/             <- MV3 extension for Workday / SmartRecruiters
+└── output/                       <- Gitignored
+    ├── applications.db
+    ├── run.log
+    └── applications/<job_id>/
+        ├── resume_tailored.txt
+        ├── <Title>-Navaneeta-<Company>.pdf
+        ├── cover_letter.txt
+        ├── outreach_email.txt
+        └── fit_report.json
 ```
 
 ---
 
-## Pipeline Design
+## Why Each Tool Was Chosen
 
-```
-+--------------------------------------------------------------------+
-|                          APPLY EASY                                |
-|                                                                    |
-|  +----------+   +-----------+   +----------------------------+     |
-|  |  SCRAPE  |-->| CLASSIFY  |-->|       AI PIPELINE          |     |
-|  | JobSpy   |   | easy /    |   |                            |     |
-|  | LinkedIn |   | full_form |   |  1. Fit Score              |     |
-|  | Indeed   |   | unknown   |   |  2. Tailor Resume          |     |
-|  +----------+   +-----------+   |  3. Resume QA Score        |     |
-|                                 |  4. Cover Letter           |     |
-|                                 |  5. Outreach Email         |     |
-|                                 +-------------+--------------+     |
-|                                               |                    |
-|                                               v                    |
-|                                  +------------------------+        |
-|                                  |    PDF GENERATION      |        |
-|                                  |  .txt -> .tex -> .pdf  |        |
-|                                  |  (pdflatex, same as    |        |
-|                                  |   Overleaf output)     |        |
-|                                  +------------------------+        |
-|                                               |                    |
-|                                               v                    |
-|                                  +------------------------+        |
-|                                  |   AUTO-APPLY (Phase 4) |        |
-|                                  |  (Playwright submit)   |        |
-|                                  +------------------------+        |
-+--------------------------------------------------------------------+
-```
-
----
-
-## Apply Type Classification
-
-After scraping, each job is automatically classified into one of three types:
-
-| Type | Meaning | Example platforms |
+| Tool | Used for | Why this tool |
 |---|---|---|
-| `easy` | One-click apply (LinkedIn Easy Apply, Indeed) | LinkedIn, Indeed |
-| `full_form` | External ATS form required | Greenhouse, Workday, Lever, Taleo, iCIMS |
-| `unknown` | Could not determine reliably | Other or scraper-limited |
+| **python-jobspy** | Scrape LinkedIn / Indeed / Naukri | Single package covers all three India-facing job boards; no API keys required |
+| **Greenhouse / Ashby / Lever APIs** | Scrape 22 company career portals directly | Public REST APIs return full JD text with zero scraping fragility; higher signal than board aggregators |
+| **Playwright** | Browser automation (auto-apply) + PDF generation | Already required for auto-apply bots — reused for HTML→PDF to eliminate the 6.9GB pdflatex dependency |
+| **Groq (Llama 3)** | LLM calls (tailor, cover letter, deep eval) | Free tier (100k tokens/day), fastest inference available; no GPU required |
+| **Ollama** | Local LLM fallback | Unlimited usage, fully offline — useful when Groq rate limit is hit |
+| **SQLite** | Job tracking database | Zero-config, single file, perfectly adequate for a personal pipeline; ships with Python |
+| **MLflow** | Experiment tracking per `--discover` run | Tracks `avg_fit_score`, `strong_matches`, filter breakdowns across days — lets you tune `KEYWORD_PRESCORE_MIN` and `FIT_SCORE_THRESHOLD` with data instead of guessing |
+| **Docker** | Container packaging | Playwright/Chromium has complex system library requirements; Docker makes setup a single command on any machine and removes the `pdflatex not found` class of errors |
+| **Kubernetes** | Scheduled unattended runs | CronJob replaces fragile cron entries; `concurrencyPolicy: Forbid` prevents overlapping runs; PVC persists DB and MLflow data across pod restarts |
+| **Flask** | Dashboard API + SSE log stream | Lightweight, zero boilerplate for a personal-use server; SSE support built-in |
+| **Rich** | Terminal tables + progress bars | Makes the `--status` and `--discover` output readable without a browser |
 
-Classification uses four signals in order:
-1. `easy_apply` boolean from JobSpy (most reliable)
-2. `job_url_direct` domain matched against known ATS patterns
-3. `apply_url` domain check
-4. HTTP GET fallback to detect redirect targets
+---
 
-Run classification alone:
+## Quick Start
+
+### Option A — Single command (installs everything, then runs)
 ```bash
-python3 main.py --classify
+bash run.sh
+```
+On first run: creates `.venv`, installs deps, installs Playwright Chromium, creates `_local.py` template.
+Add your Groq key to `_local.py`, then run again.
+
+### Option B — Make
+```bash
+make setup    # one-time install
+make prep     # detect top 5 roles + write resume variants (run after resume changes)
+make run      # scrape + score + shortlist  ← daily command
+make apply    # apply to shortlisted jobs
+make status   # view pipeline table
+```
+
+### Option C — Docker (no local Python setup)
+```bash
+# Start Docker Desktop first, then:
+docker build -t apply-easy .
+docker run --rm \
+  -e GROQ_API_KEY=your_key \
+  -v "$(pwd)/output:/app/output" \
+  -v "$(pwd)/mlruns:/app/mlruns" \
+  apply-easy --discover
+
+# Full stack (pipeline + MLflow UI + dashboard)
+GROQ_API_KEY=your_key docker-compose up
 ```
 
 ---
 
-## AI Modes
+## Daily Workflow
 
-The pipeline supports two AI backends — selected via the `AI_MODE` config or `AI_MODE` environment variable:
-
-| Mode | Provider | Model | Rate limit | Best for |
-|---|---|---|---|---|
-| `groq` | Groq cloud | llama-3.1-8b-instant | 100k tokens/day free | Speed |
-| `ollama` | Your Mac | Mistral 7B | None (unlimited) | Volume |
-
-Set the mode via environment variable (required for cron):
-```bash
-export AI_MODE=ollama   # or groq
 ```
+my_resume.tex  ─(tex_parser)→  BASE_RESUME (plain text)
 
-Or set `AI_MODE = "ollama"` in `config.py`. The env var takes precedence.
+--prep   (run once, or after resume changes)
+  role_detector → top 5 roles → resumes/<role>.txt  (edit manually per role)
 
----
+--discover  (run daily)
+  JobSpy + ATS portals → SQLite
+  Pre-filters: ghost job / stale / blacklist / location / keyword prescore
+  rule_scorer  → score 0–100 (zero LLM, instant, all jobs)
+  deep_eval    → CV match + STAR stories via Groq (top 10 jobs ≥ 75 only)
+  MLflow       → log run metrics to mlruns/mlflow.db
+  print_status → tiered table + gap mitigation action items
 
-## Cron / Unattended Operation
-
-The pipeline is fully cron-safe:
-
-- **No interactive prompts** — AI mode is read from env/config, not stdin
-- **PID lock file** (`output/pipeline.lock`) — prevents overlapping cron runs
-- **Run log** (`output/run.log`) — every run appends structured log lines
-
-Example cron entry (runs every 6 hours):
-```cron
-0 */6 * * * cd "/Users/apple/Desktop/My Projects/Apply Easy" && \
-  AI_MODE=ollama .venv/bin/python3 main.py >> output/run.log 2>&1
+--apply  (after reviewing shortlist)
+  tailor_resume + cover_letter + outreach_email  (Groq)
+  generate_html_pdf → Playwright/Chromium → A4 PDF
+  applicator → LinkedIn / Indeed / Greenhouse / Lever / Ashby bots
 ```
 
 ---
 
-## Setup — Step by Step
+## Scoring
 
-### Prerequisites
-- Mac (Apple Silicon M-series recommended)
-- Python 3.13+
-- Homebrew installed
-- A Google account (for Groq signup)
+### Tier 1 — Rule-based (all jobs, instant, $0)
 
----
-
-### Step 1 — Verify Python
-```bash
-python3 --version      # Should be 3.13+
-pip3 --version
-which python3
-```
-
----
-
-### Step 2 — Navigate to project folder
-```bash
-cd "/Users/apple/Desktop/My Projects/Apply Easy"
-```
-
----
-
-### Step 3 — Create and activate virtual environment
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-# Prompt changes to: (.venv) apple@Mac Apply Easy %
-```
-
-> **Note:** If you use conda, deactivate the base environment first to avoid conflicts:
-> ```bash
-> conda deactivate
-> source .venv/bin/activate
-> ```
-
----
-
-### Step 4 — Install Python dependencies
-```bash
-pip install flask flask-cors jobspy groq ollama \
-            requests beautifulsoup4 playwright \
-            rich lxml pdfplumber
-```
-
----
-
-### Step 5 — Install Playwright browser
-```bash
-playwright install chromium
-```
-
----
-
-### Step 6 — Install MacTeX (for pdflatex PDF compilation)
-```bash
-brew install --cask mactex-no-gui
-```
-This downloads ~6.9GB. When prompted for your password, enter it and wait for completion.
-After install, activate pdflatex without restarting terminal:
-```bash
-eval "$(/usr/libexec/path_helper)"
-pdflatex --version   # Should show: pdfTeX 3.141592653-2.6-1.40.29 (TeX Live 2026)
-```
-
----
-
-### Step 7 — Install Ollama (for unlimited local AI)
-Download from https://ollama.com/download, install the Mac app, then:
-```bash
-ollama pull mistral
-# Downloads ~4.1GB Mistral 7B model
-```
-
----
-
-### Step 8 — Set API keys
-```bash
-# Groq (free — get key at https://console.groq.com/keys)
-export GROQ_API_KEY="your-groq-key-here"
-
-# Make permanent
-echo 'export GROQ_API_KEY="your-groq-key-here"' >> ~/.zshrc
-
-# Activate pdflatex in every new session automatically
-echo 'eval "$(/usr/libexec/path_helper)"' >> ~/.zshrc
-```
-
----
-
-### Step 9 — Configure config.py
-```bash
-open -e config.py
-```
-Fill in:
-- `BASE_RESUME` — paste your full resume as plain text
-- `JOB_SEARCH["keywords"]` — roles you want to target
-- `AI_MODE` — `"groq"` or `"ollama"`
-- `CREDENTIALS` — platform login details (or set as env vars below)
-
----
-
-### Step 10 — Set platform credentials (for auto-apply)
-```bash
-export LINKEDIN_EMAIL="you@email.com"
-export LINKEDIN_PASSWORD="yourpassword"
-export INDEED_EMAIL="you@email.com"
-export INDEED_PASSWORD="yourpassword"
-export NAUKRI_EMAIL="you@email.com"
-export NAUKRI_PASSWORD="yourpassword"
-export INTERNSHALA_EMAIL="you@email.com"
-export INTERNSHALA_PASSWORD="yourpassword"
-```
-
----
-
-### Step 11 — Build the React dashboard frontend
-```bash
-cd apply-easy
-npm install
-npm run build
-cd ..
-```
-
----
-
-### Step 12 — Verify everything loads
-```bash
-.venv/bin/python3 -c "import config; print('Config OK')"
-.venv/bin/python3 -c "import db; db.init_db(); print('DB OK')"
-.venv/bin/python3 -c "from pipeline.claude_tasks import score_fit; print('Groq pipeline OK')"
-.venv/bin/python3 -c "from pipeline.ollama_tasks import score_fit; print('Ollama pipeline OK')"
-.venv/bin/python3 -c "from scrapers.jobspy_scraper import scrape_all; print('Scraper OK')"
-pdflatex --version
-```
-
----
-
-### Step 13 — Test scraper
-```bash
-.venv/bin/python3 -c "
-from scrapers.jobspy_scraper import scrape_all
-jobs = scrape_all(max_jobs=3)
-print(f'Got {len(jobs)} jobs')
-print(jobs[0]['title'], '|', jobs[0]['company'])
-"
-```
-
----
-
-### Step 14 — First full scrape + classify
-```bash
-python3 main.py --scrape
-python3 main.py --classify
-```
-
----
-
-### Step 15 — First full AI processing run
-```bash
-AI_MODE=ollama python3 main.py --process
-# Or with a limit to avoid rate limits:
-AI_MODE=groq python3 main.py --process --limit 10
-```
-
----
-
-### Step 16 — Generate .tex and PDF resumes
-```bash
-# Generate .tex files in your Overleaf template format for all jobs
-python3 generate_tex.py
-
-# Compile all to PDF using pdflatex (exact Overleaf output, same fonts)
-python3 generate_tex.py --compile
-
-# Or compile a single job manually
-pdflatex -interaction=nonstopmode \
-  -output-directory output/applications/<job_id> \
-  output/applications/<job_id>/resume_tailored.tex
-```
-
----
-
-### Step 17 — Check status table
-```bash
-python3 main.py --status
-```
-
----
-
-### Step 18 — Launch the live dashboard
-Open a second terminal tab:
-```bash
-cd "/Users/apple/Desktop/My Projects/Apply Easy"
-source .venv/bin/activate
-python3 dashboard.py
-```
-Then open http://localhost:8765 in your browser.
-
-Dashboard features:
-- **6 stat cards**: Total, Pending, Applied, Skipped, Easy Apply count, Avg Fit Score
-- **Fit score distribution** bar chart (ApexCharts)
-- **Jobs by platform** donut chart (ApexCharts)
-- **Applications table**: sortable by any column, search by title/company, filter by status and apply type
-- Color-coded fit scores (green ≥70, yellow ≥50, red <50)
-- Apply Type badges (Easy Apply = green, Full Form = yellow)
-- Direct apply links
-
----
-
-## Daily Usage — CLI Commands
-
-### Re-activate venv (every new terminal session)
-```bash
-cd "/Users/apple/Desktop/My Projects/Apply Easy"
-conda deactivate           # if conda base is active
-source .venv/bin/activate
-eval "$(/usr/libexec/path_helper)"   # activate pdflatex
-```
-
-### Run the full pipeline
-```bash
-AI_MODE=ollama python3 main.py
-```
-
-### Run steps individually
-```bash
-python3 main.py --scrape          # Scrape new jobs
-python3 main.py --classify        # Classify easy / full_form / unknown
-python3 main.py --process         # AI pipeline (score, tailor, cover letter, email)
-python3 main.py --apply           # Auto-apply to qualified Easy Apply jobs
-python3 main.py --status          # Status table in terminal
-```
-
-### Generate PDFs from processed resumes
-```bash
-python3 generate_tex.py              # All jobs -> .tex files
-python3 generate_tex.py --compile    # All jobs -> .tex + .pdf via pdflatex
-python3 generate_tex.py --job <id>   # Single job only
-```
-
-### Launch dashboard
-```bash
-python3 dashboard.py
-# Open http://localhost:8765
-```
-
-### Reset errored jobs and retry
-```bash
-python3 -c "
-import sqlite3
-from config import DB_PATH
-conn = sqlite3.connect(DB_PATH)
-conn.execute(\"UPDATE applications SET applied=0, notes='' WHERE applied=3 AND fit_score IS NULL\")
-conn.commit()
-print('Reset', conn.total_changes, 'jobs')
-conn.close()
-"
-python3 main.py --process
-```
-
-### Recommended first-run order
-```bash
-python3 main.py --scrape           # 1. Collect jobs
-python3 main.py --classify         # 2. Classify apply types
-AI_MODE=ollama python3 main.py --process  # 3. AI generates all materials
-python3 generate_tex.py --compile  # 4. Compile PDFs
-python3 main.py --status           # 5. Review in terminal
-python3 dashboard.py               # 6. Review visually at http://localhost:8765
-python3 main.py --apply            # 7. Auto-apply (Phase 4)
-```
-
----
-
-## Key Configuration Options (config.py)
-
-| Setting | Default | What it does |
-|---|---|---|
-| AI_MODE | "ollama" | "groq" or "ollama" — overridden by AI_MODE env var |
-| FIT_SCORE_THRESHOLD | 65 | Jobs below this score are skipped |
-| RESUME_SIMILARITY_MIN | 70 | Min quality score for tailored resume |
-| AUTO_APPLY | False | Set True to enable auto-submission |
-| HEADLESS | True | Set False to watch browser in real time |
-| max_per_platform | 10 | Max jobs scraped per keyword |
-
----
-
-## Output Files
-
-Every job that passes the fit threshold gets its own folder:
-
-```
-output/applications/<job_id>/
-├── resume_tailored.txt       <- AI-tailored resume (plain text source)
-├── resume_tailored.tex       <- LaTeX in your exact Overleaf template
-├── resume_tailored.pdf       <- Compiled PDF (pdflatex, same as Overleaf)
-├── cover_letter.txt          <- Personalized cover letter
-├── outreach_email.txt        <- Cold email to hiring manager (subject + body)
-└── fit_report.json           <- Fit score + resume quality breakdown
-```
-
----
-
-## Status Table Columns
-
-| Column | What it means |
+| Dimension | Weight |
 |---|---|
-| Platform | linkedin / indeed |
-| Apply Type | easy / full_form / unknown (color-coded badge) |
-| Fit | AI fit score (0–100) against your resume |
-| Claude Q | Quality score of the tailored resume (from resume_quality JSON) |
-| Status | Pending / Applied / Skipped / Error (color-coded badge) |
-| Link | Direct apply URL |
+| Keyword overlap | 35% |
+| Title match | 20% |
+| Tech stack | 20% |
+| Experience level | 15% |
+| Location | 10% |
+| Bonuses | MS degree +8, Databricks cert +5, modern tools +3, recency +5 |
 
----
+### Tier 2 — LLM deep eval (top 10 jobs ≥ 75, ~$0.05 total)
 
-## AI Models Used
+- **CV match table**: each JD requirement → specific resume line (`strong / partial / gap`)
+- **STAR stories**: 2 interview-ready stories drawn from real resume experience
+- **Top selling point**: single strongest hire reason for that role
 
-| Task | Groq mode | Ollama mode | Cost |
-|---|---|---|---|
-| Fit scoring | llama-3.1-8b-instant | mistral 7B | Free |
-| Resume tailoring | llama-3.1-8b-instant | mistral 7B | Free |
-| Resume QA | llama-3.1-8b-instant | mistral 7B | Free |
-| Cover letter | llama-3.1-8b-instant | mistral 7B | Free |
-| Outreach email | llama-3.1-8b-instant | mistral 7B | Free |
-| PDF compilation | pdflatex (MacTeX) | pdflatex (MacTeX) | Free |
+### Score tiers
 
----
-
-## Roadmap
-
-| Phase | Feature | Status |
+| Score | Label | Action |
 |---|---|---|
-| Phase 1 | Cron safety (lock file, logging, no interactive prompts) | Done |
-| Phase 2 | PDF output (pdflatex, Summary section, correct section order) | Done |
-| Phase 3 | Apply type classification (easy / full_form / unknown) | Done |
-| Phase 4a | LinkedIn Easy Apply automation (Playwright) | Planned |
-| Phase 4b | Indeed Easy Apply automation (Playwright) | Planned |
-| Phase 4c | Greenhouse ATS form automation | Planned |
-| Phase 4d | Workday ATS form automation | Planned |
-| Phase 5 | Full cron job with email digest of results | Planned |
+| 80–100 | Strong | Deep-evaluated, tailored, PDF generated, auto-applied |
+| 70–79 | Good | Deep-evaluated, tailored, queued for apply |
+| 55–69 | Moderate | Scored and listed — apply manually if interested |
+| Below 55 | Weak | Skipped |
+
+---
+
+## Pre-Filters (applied before any scoring)
+
+| Filter | What it drops |
+|---|---|
+| `is_blacklisted` | TCS, Infosys, Wipro, staffing firms |
+| `is_off_target_title` | Trainer, sales, recruiter, SEO roles |
+| `is_ghost_job` | JD contains "no longer accepting", "position filled", etc. |
+| `is_stale_posting` | Posted more than 21 days ago |
+| `is_overleveled` | Requires 6+ years experience |
+| `is_wrong_location` | Non-India, non-remote |
+| `keyword_prescore` | Less than 12% of candidate skills appear in JD |
+
+---
+
+## MLflow Experiment Tracking
+
+Every `--discover` run logs to `mlruns/mlflow.db`:
+
+```bash
+# View dashboard
+mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db --port 5001
+# Open http://localhost:5001
+```
+
+**Logged per run:**
+
+| Type | Fields |
+|---|---|
+| Params | `keyword_prescore_min`, `fit_score_threshold`, `resume_mode`, `platforms` |
+| Metrics | `jobs_scraped`, `jobs_filtered`, `jobs_scored`, `avg_fit_score`, `strong_matches`, `good_matches` |
+| Metrics | `filtered_Wrong location`, `filtered_Low keyword match`, `filtered_Ghost job`, etc. |
+| Artifacts | `top_jobs.txt`, `filter_breakdown.txt` |
+
+Use the charts to tune thresholds: if `strong_matches` is always 0, lower `KEYWORD_PRESCORE_MIN`; if the shortlist is too noisy, raise it.
+
+---
+
+## Kubernetes (Unattended Cloud Deployment)
+
+```bash
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/storage.yaml
+kubectl apply -f k8s/configmap.yaml
+# Copy k8s/secret.yaml.template → k8s/secret.yaml, fill base64 values
+kubectl apply -f k8s/secret.yaml
+kubectl apply -f k8s/mlflow-deployment.yaml
+kubectl apply -f k8s/cronjob.yaml
+
+# Trigger a manual run immediately
+kubectl create job --from=cronjob/apply-easy-discover test-run -n apply-easy
+kubectl logs -f job/test-run -n apply-easy
+```
+
+The CronJob runs `--discover` daily at **9:00 AM UTC**. `concurrencyPolicy: Forbid` ensures runs never overlap.
+
+---
+
+## Configuration Reference
+
+| Setting | Default | Description |
+|---|---|---|
+| `KEYWORD_PRESCORE_MIN` | `0.12` | Min fraction of candidate skills that must appear in JD |
+| `FIT_SCORE_THRESHOLD` | `70` | Minimum rule-based score to proceed to tailoring |
+| `CLUSTER_CACHE_DAYS` | `7` | Days before role-cluster resume cache expires |
+| `HEADLESS` | `False` | `True` = headless browser for auto-apply |
+| `JOB_SEARCH["location"]` | `"India"` | Primary scrape location |
+| `JOB_SEARCH["hours_old"]` | `72` | Only scrape jobs posted in last N hours |
+| `DEEP_EVAL_MIN` | `75` | Minimum score to trigger LLM deep evaluation |
+| `DEEP_EVAL_LIMIT` | `10` | Max jobs to deep-evaluate per run |
+
+---
+
+## Applicator Coverage
+
+| Platform | Method | Notes |
+|---|---|---|
+| LinkedIn | Playwright Easy Apply bot | Session saved (Fernet encrypted) |
+| Indeed | Playwright Apply bot | Session saved |
+| Greenhouse | Playwright bot | Stateless |
+| Lever | Playwright bot | Stateless |
+| Ashby | Playwright bot | Stateless |
+| Workday / SmartRecruiters | Chrome Extension | Manual submit |
 
 ---
 
@@ -514,110 +275,11 @@ output/applications/<job_id>/
 
 | Issue | Fix |
 |---|---|
-| `(.venv)` not showing | Run `source .venv/bin/activate` from project root |
-| Both `(base)` and `(.venv)` active | Run `conda deactivate` first, then activate `.venv` |
-| `ModuleNotFoundError: flask` | Use `.venv/bin/python3 dashboard.py` or `conda deactivate` first |
-| `ModuleNotFoundError` for any package | Make sure `.venv` is active; re-run `pip install` |
-| pdflatex not found | Run `eval "$(/usr/libexec/path_helper)"` or restart terminal |
-| Groq 429 token limit | Resets at midnight UTC (5:30 AM IST); switch to `AI_MODE=ollama` |
-| Groq 429 mid-run | Reset errored jobs (see above); retry or use second Groq account |
-| Scraper returns 0 jobs | Old bs4 scrapers are blocked; use `jobspy_scraper.py` |
-| JobSpy rate-limited | Wait 5 min and retry; reduce `max_per_platform` in config |
-| Ollama JSON errors | Robust `_parse_json` handles this; retry if it persists |
-| `(Action Verb: X)` in resume | Fixed by `_clean_model_output()` in main.py; update and re-run `--process` |
-| Hallucinated metrics in email | Anti-hallucination rule added to `build_outreach_prompt` in resume_rules.py |
-| PDF missing Summary section | Fixed in generate_tex.py — `render_summary()` renders prose block |
-| Wrong section order in PDF | Fixed — order is Summary → Skills → Experience → Projects → Education → Certs |
-| Playwright login fails | Set `HEADLESS=False` in config.py to debug visually |
-| MacTeX install cancelled | Re-run `brew install --cask mactex-no-gui` and enter password when asked |
-| pdflatex compile error | Upload `.tex` to Overleaf to see the exact LaTeX error |
-| Dashboard shows blank page | Build the React app first: `cd apply-easy && npm install && npm run build` |
-| VS Code Pylance warnings | Cmd+Shift+P → "Python: Select Interpreter" → `./.venv/bin/python` |
-
----
-
-## Groq Rate Limits (Free Tier)
-
-| Model | Requests/min | Tokens/min | Tokens/day |
-|---|---|---|---|
-| llama-3.1-8b-instant | 30 | 20,000 | 100,000 |
-| llama-3.3-70b-versatile | 30 | 32,000 | 100,000 |
-
-At ~5 API calls and ~2,500 tokens per job, you can process roughly 40 jobs/day free.
-Switch to Ollama (Mistral 7B) with `AI_MODE=ollama` for unlimited local processing.
-
----
-
-## Ollama Local AI
-
-Runs fully on your Mac — no internet, no API key, no rate limits.
-
-| Spec | Value |
-|---|---|
-| Model | Mistral 7B |
-| RAM required | 8GB minimum, 16GB recommended |
-| Speed (M-series Mac) | ~30–60 seconds per job |
-| Quality vs Groq | Slightly lower, very close for resume tasks |
-
----
-
-## Additional Utility Scripts
-
-### Process with --limit
-Process only N jobs per run to avoid hitting Groq token limits:
-
-```bash
-python3 main.py --process --limit 10
-```
-
-### Wipe everything and start fresh
-```bash
-python3 main.py --reset
-# Type 'yes' to confirm — deletes DB and all output files
-```
-
-### Restore scores from output files
-If scores get wiped from the DB but output files still exist on disk,
-restore them without re-running any AI:
-
-```bash
-python3 -c "
-import sqlite3, os, json
-from config import DB_PATH, OUTPUT_DIR
-
-conn = sqlite3.connect(DB_PATH)
-restored = 0
-
-rows = conn.execute('SELECT job_id FROM applications WHERE fit_score IS NULL').fetchall()
-for (job_id,) in rows:
-    fit_path = os.path.join(OUTPUT_DIR, job_id, 'fit_report.json')
-    resume_path = os.path.join(OUTPUT_DIR, job_id, 'resume_tailored.txt')
-    if os.path.exists(fit_path) and os.path.exists(resume_path):
-        with open(fit_path) as f:
-            data = json.load(f)
-        fit = data.get('fit', {})
-        score = fit.get('score')
-        if score:
-            conn.execute('UPDATE applications SET fit_score=? WHERE job_id=?', (score, job_id))
-            restored += 1
-
-conn.commit()
-conn.close()
-print(f'Restored scores for {restored} jobs from output files')
-"
-```
-
----
-
-## Score Ranges Guide
-
-| Score | Meaning | Action |
-|---|---|---|
-| 85–100 | Strong match | Apply immediately |
-| 70–84 | Good match | Apply with tailored resume |
-| 65–69 | Marginal | Review manually before applying |
-| Below 65 | Weak match | Skipped automatically |
-
----
-
-*Built with JobSpy, Groq (Llama 3.1 8B), Ollama (Mistral 7B), pdflatex (MacTeX), Flask, React, ApexCharts, Playwright, SQLite, and Rich.*
+| `ModuleNotFoundError` | Use `.venv/bin/python main.py` or run `make setup` |
+| `Cannot connect to Docker daemon` | Open Docker Desktop app, wait for menu-bar whale icon |
+| `repository name must be lowercase` | Quote the volume path: `-v "$(pwd)/output:/app/output"` |
+| `Pipeline already running` | Delete `output/pipeline.lock` if the previous PID is dead |
+| Groq 429 rate limit | Switch `AI_MODE=ollama` in config or wait until midnight UTC |
+| LinkedIn login loop | Delete `output/.credentials.enc`, re-run `--apply` |
+| PDF not generated | Run `playwright install chromium` inside the venv |
+| MLflow errors | Run `mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db` |

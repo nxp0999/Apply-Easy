@@ -12,12 +12,21 @@ import re
 
 from config import (
     AI_MODE,
+    BASE_RESUME,
     FIT_SCORE_THRESHOLD,
+    GROQ_API_KEY,
+    JOB_BOARDS,
+    KEYWORD_PRESCORE_MIN,
+    RESUME_MODE,
     RESUME_SIMILARITY_MIN,
     OUTPUT_DIR,
     ROLE_CLUSTERS,
 )
-from resume_rules import STRONG_VERBS
+from filters import (
+    is_blacklisted, is_overleveled, is_off_target_title,
+    is_wrong_location, keyword_prescore,
+    is_stale_posting, is_ghost_job,
+)
 from db import (
     init_db,
     migrate_db,
@@ -71,13 +80,25 @@ def _setup_logging():
 
 def scrape_all():
     from scrapers.jobspy_scraper import scrape_all as _scrape
+    from scrapers.ats_scraper import scrape_ats_portals
 
-    all_jobs = _scrape()
+    jobspy_jobs    = _scrape()
+    ats_jobs       = scrape_ats_portals()
+    cutshort_jobs: list = []
+
+    if "cutshort" in JOB_BOARDS:
+        from scrapers.cutshort_scraper import scrape_cutshort
+        cutshort_jobs = scrape_cutshort()
+
+    all_jobs = jobspy_jobs + ats_jobs + cutshort_jobs
 
     for job in all_jobs:
         insert_job(job)
 
-    console.print(f"\n[green]✓ Scraped {len(all_jobs)} unique jobs.[/green]")
+    console.print(
+        f"\n[green]✓ Scraped {len(all_jobs)} unique jobs[/green]  "
+        f"[dim](JobSpy: {len(jobspy_jobs)}, ATS portals: {len(ats_jobs)}, Cutshort: {len(cutshort_jobs)})[/dim]"
+    )
     return all_jobs
 
 
@@ -127,61 +148,17 @@ def _clean_model_output(text: str) -> str:
 
 
 def _check_resume_issues(text: str) -> list:
-    # Strip markdown formatting that confuses the bullet checker
-    text = text.replace("**", "").replace("__", "")
-    """Run ATS checks and return list of issues found."""
-    import re
+    """Check for content integrity issues (fabrication signals, filler phrases)."""
     issues = []
 
-    # Extract bullets
-    bullets = [ln.strip().lstrip("-•* ").strip()
-               for ln in text.splitlines()
-               if ln.strip().startswith(("-", "•", "*"))]
-
-    # 1. Bullet count
-    if len(bullets) > 20:
-        issues.append(f"Too many bullets: {len(bullets)} — reduce to max 20")
-
-    # 2. Quantified bullets
-    quantified = [b for b in bullets if re.search(r"\d+", b)]
-    pct = len(quantified) / len(bullets) * 100 if bullets else 0
-    if pct < 80:
-        unquantified = [b[:60] for b in bullets if not re.search(r"\d+", b)]
-        issues.append(f"Only {pct:.0f}% bullets quantified — add numbers to: {unquantified[:3]}")
-
-    # 3. Repeated verbs
-    verb_counts = {}
-    for b in bullets:
-        first = b.split()[0].lower().rstrip(".,") if b else ""
-        if first in STRONG_VERBS:
-            verb_counts[first] = verb_counts.get(first, 0) + 1
-    overused = {v: c for v, c in verb_counts.items() if c > 1}
-    if overused:
-        issues.append(f"Overused action verbs (max 2 each): {overused} — replace with different verbs")
-
-    # 4. Date consistency
-    short = re.findall(r"\b(Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b", text)
-    long_ = re.findall(r"\b(January|February|March|April|June|July|August|September|October|November|December)\b", text)
-    if short and long_:
-        issues.append(f"Inconsistent dates — change all short months {set(short)} to long format (e.g. January not Jan)")
-
-    # 5. Filler phrases
-    FILLERS = ["responsible for","helped with","worked on","demonstrating expertise",
-               "showcasing ability","assisted in","participated in","involved in"]
+    FILLERS = [
+        "responsible for", "helped with", "worked on",
+        "demonstrating expertise", "showcasing ability",
+        "assisted in", "participated in", "involved in",
+    ]
     found = [f for f in FILLERS if f in text.lower()]
     if found:
-        issues.append(f"Filler phrases found — remove: {found}")
-
-    # 6. Similar bullets
-    seen = []
-    for b in bullets:
-        words = set(b.lower().split())
-        for s in seen:
-            overlap = len(words & set(s.lower().split())) / max(len(words), 1)
-            if overlap > 0.75:
-                issues.append(f"Duplicate bullet — rewrite to be unique: '{b[:50]}'")
-                break
-        seen.append(b)
+        issues.append(f"Filler phrases — remove: {found}")
 
     return issues
 
@@ -193,12 +170,13 @@ def _check_resume_issues(text: str) -> list:
 def process_with_claude(scraped_jobs, limit=None):
     ai_mode = os.environ.get("AI_MODE", "groq")
 
-    # Use Groq for scoring when a key is available (faster, more accurate).
-    # Fall back to the local model if running in pure-offline / Ollama mode.
-    if os.getenv("GROQ_API_KEY"):
-        from pipeline.claude_tasks import score_fit, score_tailored_resume
-    else:
-        from pipeline.ollama_tasks import score_fit, score_tailored_resume
+    # Fit scoring is now rule-based (zero LLM calls, instant, deterministic).
+    from pipeline.rule_scorer import score_fit_rules
+    from pipeline.ollama_tasks import score_tailored_resume as _score_tailored_ollama
+    from pipeline.claude_tasks import score_tailored_resume as _score_tailored_groq
+    score_tailored_resume = (
+        _score_tailored_ollama if ai_mode == "ollama" else _score_tailored_groq
+    )
 
     if ai_mode == "ollama":
         from pipeline.ollama_tasks import (
@@ -235,15 +213,61 @@ def process_with_claude(scraped_jobs, limit=None):
         pending = pending[:limit]
         console.print(f"[yellow]Limiting to {limit} jobs this run.[/yellow]\n")
 
+    # Funnel drop counters
+    _drops = {"blacklist": 0, "title": 0, "overlevel": 0,
+              "location": 0, "keyword": 0, "fit": 0}
+
     for job in track(pending, description="Claude working..."):
         try:
-            # 1. Fit score
-            fit = score_fit(job)
+            company  = job.get("company", "")
+            title    = job.get("title", "")
+            jd       = job.get("description", "")
+            location = job.get("location", "")
+
+            # ── Stage 0: hard filters (free) ──────────────────────────────
+            if is_blacklisted(company):
+                console.print(f"  [dim]↷ Blacklisted: {company}[/dim]")
+                mark_applied(job["job_id"], status=2, notes="Blacklisted company")
+                _drops["blacklist"] += 1
+                continue
+            if is_off_target_title(title):
+                console.print(f"  [dim]↷ Off-target title: {title}[/dim]")
+                mark_applied(job["job_id"], status=2, notes="Off-target title")
+                _drops["title"] += 1
+                continue
+            if is_overleveled(jd):
+                console.print(f"  [dim]↷ Overleveled: {title} @ {company}[/dim]")
+                mark_applied(job["job_id"], status=2, notes="Overleveled — 6+ years required")
+                _drops["overlevel"] += 1
+                continue
+
+            # ── Stage 1: location check (free) ──────────────────────────────
+            if is_wrong_location(location, jd):
+                console.print(f"  [dim]↷ Wrong location: {location or '?'}[/dim]")
+                mark_applied(job["job_id"], status=2, notes=f"Wrong location: {location}")
+                _drops["location"] += 1
+                continue
+
+            # ── Stage 2: keyword pre-score (free — string match only) ───────────
+            kp = keyword_prescore(jd, title)
+            if kp < KEYWORD_PRESCORE_MIN:
+                console.print(
+                    f"  [dim]↷ Low keyword match ({kp:.0%}): {title}[/dim]"
+                )
+                mark_applied(job["job_id"], status=2,
+                             notes=f"Keyword pre-score {kp:.0%} < {KEYWORD_PRESCORE_MIN:.0%}")
+                _drops["keyword"] += 1
+                continue
+
+            # ── Stage 3: rule-based fit score (zero LLM, instant) ──────────
+            fit = score_fit_rules(job, BASE_RESUME)
             score = fit.get("score", 0)
             color = "green" if score >= FIT_SCORE_THRESHOLD else "red"
             console.print(
                 f"  [bold]{job['title']}[/bold] @ {job['company']} — "
-                f"Fit: [{color}]{score}/100[/{color}]"
+                f"Fit: [{color}]{score}/100[/{color}]  "
+                f"[dim](kw={fit['keyword_overlap']} ti={fit['title_match']} "
+                f"exp={fit['experience_level']} tech={fit['tech_stack']})[/dim]"
             )
 
             if score < FIT_SCORE_THRESHOLD:
@@ -251,31 +275,63 @@ def process_with_claude(scraped_jobs, limit=None):
                     job["job_id"], status=2, notes=f"Fit score {score} below threshold"
                 )
                 update_claude_outputs(job["job_id"], fit, "", {}, "", {})
+                _drops["fit"] += 1
                 continue
 
-            # 2. Tailor resume — check cluster cache first
+            # 2. Tailor resume — 3-tier lookup: approved → cached → generate
             from pipeline.cluster_cache import (
-                map_to_cluster, get_cached_resume, save_to_cache,
-                copy_cluster_pdf, save_cluster_pdf,
+                map_to_cluster, get_approved_resume, get_cached_resume,
+                save_to_cache, copy_cluster_pdf, save_cluster_pdf,
             )
-            cluster     = map_to_cluster(job.get("title", ""))
-            cached_text = get_cached_resume(cluster) if cluster else None
-            cache_hit   = cached_text is not None
+            cluster = map_to_cluster(job.get("title", ""))
 
-            if cache_hit:
-                tailored = cached_text
-                quality  = {
-                    "overall": 90, "factual_accuracy": 95,
-                    "ats_score": 85, "clarity": 90,
-                    "drift_warning": False, "notes": "cluster cache hit",
+            # ── Tier 1: hand-approved resume ──────────────────────────────
+            approved_text = (
+                get_approved_resume(cluster)
+                if cluster and RESUME_MODE != "generate"
+                else None
+            )
+            if approved_text:
+                tailored  = approved_text
+                cache_hit = True
+                quality   = {
+                    "overall": 95, "factual_accuracy": 100,
+                    "ats_score": 90, "clarity": 95,
+                    "drift_warning": False, "notes": "hand-approved resume",
                 }
                 console.print(
-                    f"    [dim]↩ Cached resume reused "
-                    f"({ROLE_CLUSTERS[cluster]['label']})[/dim]"
+                    f"    [green]✓ Approved resume used "
+                    f"({ROLE_CLUSTERS[cluster]['label']})[/green]"
                 )
+
+            # ── Tier 2: AI-generated cluster cache ────────────────────────
+            elif RESUME_MODE == "approved_only":
+                console.print(
+                    f"    [yellow]↷ No approved resume for cluster "
+                    f"'{cluster or 'none'}' — skipping (approved_only mode)[/yellow]"
+                )
+                mark_applied(job["job_id"], status=2, notes="No approved resume for cluster")
+                continue
             else:
+                cached_text = get_cached_resume(cluster) if cluster else None
+                cache_hit   = cached_text is not None
+                if cache_hit:
+                    tailored = cached_text
+                    quality  = {
+                        "overall": 90, "factual_accuracy": 95,
+                        "ats_score": 85, "clarity": 90,
+                        "drift_warning": False, "notes": "cluster cache hit",
+                    }
+                    console.print(
+                        f"    [dim]↩ Cached resume reused "
+                        f"({ROLE_CLUSTERS[cluster]['label']})[/dim]"
+                    )
+
+            # ── Tier 3: generate fresh ─────────────────────────────────────
+            if not approved_text and not (cluster and cache_hit):
                 MAX_ATTEMPTS = 3
-                tailored = tailor_resume(job)
+                missing_kw = fit.get("missing_keywords", [])
+                tailored = tailor_resume(job, missing_keywords=missing_kw)
                 tailored = _clean_model_output(tailored)
 
                 for attempt in range(MAX_ATTEMPTS):
@@ -347,8 +403,6 @@ def process_with_claude(scraped_jobs, limit=None):
             )
             # PDF — copy from cluster cache (instant) or compile fresh
             try:
-                from generate_tex import process_job as gen_tex
-                import subprocess
                 job_dir  = os.path.join(OUTPUT_DIR, job["job_id"])
                 title_s  = (job.get("title",   "Role")   .replace(" ", "-")
                     .replace(",", "").replace("/", "-")[:40])
@@ -358,33 +412,43 @@ def process_with_claude(scraped_jobs, limit=None):
                 pdf_standard = os.path.join(job_dir, "resume_tailored.pdf")
                 pdf_path     = os.path.join(job_dir, pdf_name)
 
+                from generate_html_pdf import generate_pdf as _gen_pdf
                 if cache_hit and copy_cluster_pdf(cluster, job_dir, pdf_name):
                     console.print(f"    [green]✓ Copied cluster PDF → {pdf_name}[/green]")
                 else:
-                    gen_tex(job_dir, compile_pdf=False)
-                    tex_path = f"{job_dir}/resume_tailored.tex"
-                    subprocess.run(
-                        ["pdflatex", "-interaction=nonstopmode",
-                         "-output-directory", job_dir, tex_path],
-                        capture_output=True, text=True, timeout=30
-                    )
-                    if os.path.exists(pdf_standard):
-                        shutil.copy(pdf_standard, pdf_path)
-                        console.print(f"    [green]✓ Saved as {pdf_name}[/green]")
-                        if cluster:
-                            save_cluster_pdf(cluster, pdf_standard)
+                    resume_text = tailored or BASE_RESUME
+                    _gen_pdf(resume_text, pdf_path)
                     if os.path.exists(pdf_path):
-                        console.print("    [green]✓ PDF compiled → resume_tailored.pdf[/green]")
+                        shutil.copy(pdf_path, pdf_standard)
+                        console.print(f"    [green]✓ PDF generated → {pdf_name}[/green]")
+                        if cluster:
+                            save_cluster_pdf(cluster, pdf_path)
                     else:
-                        console.print("    [yellow]⚠ PDF compile failed — .tex saved, check manually[/yellow]")
-            except FileNotFoundError:
-                console.print("    [yellow]⚠ pdflatex not found — run: eval \"$(/usr/libexec/path_helper)\"[/yellow]")
+                        console.print("    [yellow]⚠ PDF generation failed — resume text saved[/yellow]")
             except Exception as e:
                 console.print(f"    [yellow]⚠ PDF generation skipped: {e}[/yellow]")
 
         except Exception as e:
             console.print(f"    [red]Error: {e}[/red]")
             mark_applied(job["job_id"], status=3, notes=str(e))
+
+    # ── Funnel summary ────────────────────────────────────────────────────
+    total_dropped = sum(_drops.values())
+    llm_seen = len(pending) - total_dropped + _drops["fit"]
+    tbl = Table(title="Processing funnel", show_header=True, header_style="bold cyan")
+    tbl.add_column("Stage",   style="dim")
+    tbl.add_column("Dropped", justify="right")
+    tbl.add_column("Reason")
+    tbl.add_row("0a Blacklist",      str(_drops["blacklist"]), "company on blacklist")
+    tbl.add_row("0b Off-target",     str(_drops["title"]),     "title clearly unrelated")
+    tbl.add_row("0c Overleveled",    str(_drops["overlevel"]), "6+ years required")
+    tbl.add_row("1  Location",       str(_drops["location"]),  "not India / not remote")
+    tbl.add_row("2  Keyword match",  str(_drops["keyword"]),   f"< {KEYWORD_PRESCORE_MIN:.0%} skill overlap")
+    tbl.add_row("3  LLM fit score",  str(_drops["fit"]),       f"score < {FIT_SCORE_THRESHOLD}")
+    tbl.add_row("[bold]LLM calls made[/bold]",
+                f"[bold]{llm_seen}[/bold]",
+                f"of {len(pending)} total ({len(pending) - total_dropped} passed all gates)")
+    console.print(tbl)
 
 
 # ── STEP 3: AUTO-APPLY ────────────────────────────────────────────────────
@@ -405,10 +469,45 @@ def auto_apply(dry_run: bool = False):
 
     easy_jobs = get_easy_apply_pending()
     full_jobs = get_full_form_pending()
+
+    # Run the same cheap pre-filters as process_with_claude so nothing
+    # that slipped in before filters were added reaches Playwright.
+    def _passes_filters(job: dict) -> bool:
+        co = job.get("company", "")
+        ti = job.get("title", "")
+        jd = job.get("description", "") or ""
+        lo = job.get("location", "") or ""
+        if is_blacklisted(co):
+            return False
+        if is_off_target_title(ti):
+            return False
+        if is_overleveled(jd):
+            return False
+        if is_wrong_location(lo, jd):
+            return False
+        if keyword_prescore(jd, ti) < KEYWORD_PRESCORE_MIN:
+            return False
+        return True
+
+    def _gate(jobs: list) -> list:
+        kept, dropped = [], 0
+        for j in jobs:
+            if _passes_filters(j):
+                kept.append(j)
+            else:
+                console.print(f"  [dim]↷ Filtered at apply gate: {j.get('title','')} @ {j.get('company','')}[/dim]")
+                mark_applied(j["job_id"], status=2, notes="Filtered at apply gate")
+                dropped += 1
+        if dropped:
+            console.print(f"  [dim]({dropped} jobs filtered before Playwright starts)[/dim]")
+        return kept
+
+    easy_jobs = _gate(easy_jobs)
+    full_jobs  = _gate(full_jobs)
     total     = len(easy_jobs) + len(full_jobs)
 
     if not total:
-        console.print("[yellow]No jobs ready to auto-apply.[/yellow]")
+        console.print("[yellow]No jobs ready to auto-apply (all filtered or none pending).[/yellow]")
         return
 
     tag = "[dim][DRY RUN][/dim] " if dry_run else ""
@@ -500,51 +599,306 @@ def auto_apply(dry_run: bool = False):
 # ── STATUS TABLE ──────────────────────────────────────────────────────────
 
 
-def print_status():
+def print_status(include_actions: bool = False):
     rows = get_all()
     if not rows:
-        console.print("[yellow]No applications yet.[/yellow]")
+        console.print("[yellow]No applications yet. Run: python main.py --discover[/yellow]")
         return
-
-    status_map = {0: "Pending", 1: "✓ Applied", 2: "Skipped", 3: "Error"}
-    color_map = {0: "white", 1: "green", 2: "yellow", 3: "red"}
 
     type_color = {"easy": "green", "full_form": "yellow", "unknown": "dim"}
 
-    table = Table(title="Job Application Tracker", show_lines=True)
-    table.add_column("Platform", style="cyan")
-    table.add_column("Title")
-    table.add_column("Company")
-    table.add_column("Posted", justify="right")
-    table.add_column("Apply Type")
-    table.add_column("Fit", justify="right")
-    table.add_column("Claude Q", justify="right")
-    table.add_column("Status")
+    def _tier(score):
+        if score is None:
+            return ("Unscored",       "dim")
+        if score >= 80:
+            return ("Strong (80+)",   "green")
+        if score >= 70:
+            return ("Good   (70-79)", "cyan")
+        if score >= 55:
+            return ("Moderate (55-69)", "yellow")
+        return ("Weak   (<55)", "red")
 
-    for r in rows:
-        quality   = json.loads(r.get("resume_quality") or "{}")
-        status    = r.get("applied", 0)
-        atype     = r.get("apply_type") or "?"
-        atype_str = f"[{type_color.get(atype, 'white')}]{atype}[/]"
-        posted    = (r.get("date_posted") or "—")[-5:]  # show MM-DD only
-        table.add_row(
-            r["platform"].capitalize(),
-            (r["title"] or "")[:30],
-            (r["company"] or "")[:20],
-            posted,
-            atype_str,
-            str(r.get("fit_score") or "—"),
-            str(quality.get("overall") or "—"),
-            f"[{color_map[status]}]{status_map[status]}[/]",
+    # Group pending jobs by tier; applied/skipped shown in a compact summary.
+    pending = [r for r in rows if r.get("applied") == 0]
+    applied = [r for r in rows if r.get("applied") == 1]
+    skipped = [r for r in rows if r.get("applied") == 2]
+
+    # Sort pending by score desc, then date desc
+    pending.sort(key=lambda r: (-(r.get("fit_score") or 0), r.get("date_posted") or ""), reverse=False)
+
+    tiers_order = ["Strong (80+)", "Good   (70-79)", "Moderate (55-69)", "Weak   (<55)", "Unscored"]
+    tier_colors = {
+        "Strong (80+)":    "green",
+        "Good   (70-79)": "cyan",
+        "Moderate (55-69)": "yellow",
+        "Weak   (<55)":   "red",
+        "Unscored":        "dim",
+    }
+    tier_jobs: dict[str, list] = {t: [] for t in tiers_order}
+    for r in pending:
+        label, _ = _tier(r.get("fit_score"))
+        tier_jobs[label].append(r)
+
+    for tier_label in tiers_order:
+        jobs_in_tier = tier_jobs[tier_label]
+        if not jobs_in_tier:
+            continue
+        color = tier_colors[tier_label]
+        tbl = Table(
+            title=f"[{color}]{tier_label}[/{color}]  ({len(jobs_in_tier)} jobs)",
+            show_lines=False,
+            header_style="bold",
+            show_header=True,
         )
+        tbl.add_column("Fit",      justify="right", style=color, width=5)
+        tbl.add_column("Posted",   justify="right", width=6)
+        tbl.add_column("Platform", style="cyan",    width=9)
+        tbl.add_column("Title",                    width=34)
+        tbl.add_column("Company",                  width=22)
+        tbl.add_column("Type",     justify="center",width=10)
+        for r in jobs_in_tier:
+            atype     = r.get("apply_type") or "?"
+            atype_str = f"[{type_color.get(atype, 'white')}]{atype}[/]"
+            posted    = (r.get("date_posted") or "—")[-5:]
+            score_str = str(r.get("fit_score")) if r.get("fit_score") else "—"
+            tbl.add_row(
+                score_str,
+                posted,
+                (r.get("platform") or "").capitalize(),
+                (r.get("title")    or "")[:34],
+                (r.get("company")  or "")[:22],
+                atype_str,
+            )
+        console.print(tbl)
 
-    console.print(table)
-    applied = sum(1 for r in rows if r.get("applied") == 1)
-    skipped = sum(1 for r in rows if r.get("applied") == 2)
-    pending = sum(1 for r in rows if r.get("applied") == 0)
     console.print(
-        f"\n✓ Applied: {applied}  |  ⏳ Pending: {pending}  |  ⊘ Skipped: {skipped}"
+        f"\n[green]✓ Applied: {len(applied)}[/green]  "
+        f"[cyan]⏳ Shortlisted: {len(pending)}[/cyan]  "
+        f"[dim]⊘ Skipped: {len(skipped)}[/dim]"
     )
+
+    if include_actions:
+        from pipeline.rule_scorer import _gap_mitigations
+        import json
+        actionable = [r for r in pending if (r.get("fit_score") or 0) >= 70]
+        if actionable:
+            console.print("\n[bold yellow]Action Items — Strong & Good matches[/bold yellow]")
+            for r in actionable[:8]:
+                gaps_raw = r.get("fit_gaps") or "[]"
+                try:
+                    gaps = json.loads(gaps_raw) if isinstance(gaps_raw, str) else gaps_raw
+                except Exception:
+                    gaps = []
+                jd = (r.get("description") or "").lower()
+                resume_lc = BASE_RESUME.lower()
+                hints = _gap_mitigations(gaps, jd, resume_lc)
+                score = r.get("fit_score", "?")
+                title = (r.get("title") or "")[:35]
+                co    = (r.get("company") or "")[:20]
+                console.print(f"  [{score}] [cyan]{title}[/cyan] @ {co}")
+                if hints:
+                    for h in hints:
+                        console.print(f"       [dim]→ {h}[/dim]")
+                else:
+                    console.print("       [dim]→ No specific gaps — good to apply[/dim]")
+
+
+def run_prep(top_n: int = 5):
+    """
+    Segment 1 — rank top N qualified roles and write a role-highlighted
+    resume variation for each.  Zero LLM calls: the variation is the
+    original resume text with a role-specific summary prepended.
+    Edit resumes/<cluster>.txt manually to fine-tune each version.
+    """
+    from pipeline.role_detector import detect_top_roles
+
+    console.print(f"\n[bold cyan]Segment 1 — Resume Prep[/bold cyan]  (top {top_n} roles)\n")
+
+    roles = detect_top_roles(BASE_RESUME, n=top_n)
+
+    # ── Role ranking table ──────────────────────────────────────────────────
+    tbl = Table(title="Roles your resume qualifies for", header_style="bold cyan",
+                show_lines=False)
+    tbl.add_column("#",      justify="right", width=3)
+    tbl.add_column("Score",  justify="right", width=6)
+    tbl.add_column("Cluster",               width=20)
+    tbl.add_column("Role",                  width=26)
+    tbl.add_column("Gaps (things to add manually)")
+    rank_colors = ["green", "green", "cyan", "cyan", "yellow"]
+    for i, role in enumerate(roles):
+        color = rank_colors[min(i, len(rank_colors) - 1)]
+        gaps = "; ".join(role["gaps"][:2]) if role["gaps"] else "—"
+        tbl.add_row(
+            str(i + 1),
+            f"[{color}]{role['score']}[/{color}]",
+            role["cluster"],
+            role["label"],
+            f"[dim]{gaps}[/dim]",
+        )
+    console.print(tbl)
+
+    # ── Write role variations (no LLM) ─────────────────────────────────────
+    os.makedirs("resumes", exist_ok=True)
+    console.print(f"\n[cyan]Writing {top_n} resume variations…[/cyan]\n")
+
+    for i, role in enumerate(roles, 1):
+        cluster  = role["cluster"]
+        out_path = f"resumes/{cluster}.txt"
+        if os.path.exists(out_path):
+            console.print(
+                f"  [{i}/{top_n}] [dim]Skipping {cluster} "
+                f"— already exists at {out_path}[/dim]"
+            )
+            continue
+
+        with open(out_path, "w") as f:
+            f.write(BASE_RESUME)
+        console.print(f"  [{i}/{top_n}] [green]✓ Saved → {out_path}[/green]")
+        if role["missing"]:
+            console.print(
+                f"         [dim]Keywords to consider adding: "
+                f"{', '.join(role['missing'][:6])}[/dim]"
+            )
+
+    console.print(
+        "\n[dim]Each file is an exact copy of your original resume.\n"
+        "Open resumes/<cluster>.txt and tweak skills ordering or wording for that role.\n"
+        "The pipeline will use these automatically when applying.[/dim]"
+    )
+
+
+def run_discover(limit=None):
+    """Segment 2 — scrape fresh jobs, score all, display tiered shortlist."""
+    from pipeline.rule_scorer import score_fit_rules
+    from db import get_conn, update_claude_outputs
+    import config as _cfg
+    from pipeline.experiment_tracker import (
+        build_params, start_run, log_metrics,
+        log_filter_breakdown, log_top_jobs, end_run,
+    )
+
+    console.print("\n[bold cyan]Segment 2 — Discover & Score[/bold cyan]\n")
+
+    # Start MLflow run
+    start_run(build_params(_cfg))
+
+    # Step 1: scrape
+    scrape_all()
+
+    # Step 2: classify
+    classify_jobs()
+
+    # Step 3: score all unscored jobs instantly (zero LLM)
+    conn = get_conn()
+    unscored = [
+        dict(r) for r in conn.execute(
+            "SELECT * FROM applications WHERE fit_score IS NULL AND applied = 0"
+        ).fetchall()
+    ]
+    conn.close()
+
+    if limit:
+        unscored = unscored[:limit]
+
+    dropped = scored = 0
+    filter_drops: dict[str, int] = {}
+    scores_seen: list[int] = []
+    for job in unscored:
+        co = job.get("company", "")
+        ti = job.get("title",   "")
+        jd = job.get("description", "") or ""
+        lo = job.get("location", "") or ""
+
+        # Cheap pre-filters first
+        reason = None
+        if is_blacklisted(co):
+            reason = "Blacklisted company"
+        elif is_off_target_title(ti):
+            reason = "Off-target title"
+        elif is_ghost_job(jd):
+            reason = "Ghost job — posting closed"
+        elif is_stale_posting(job.get("date_posted")):
+            reason = "Stale posting (>21 days)"
+        elif is_overleveled(jd):
+            reason = "Overleveled"
+        elif is_wrong_location(lo, jd):
+            reason = "Wrong location"
+        elif keyword_prescore(jd, ti) < KEYWORD_PRESCORE_MIN:
+            reason = "Low keyword match"
+
+        if reason:
+            mark_applied(job["job_id"], status=2, notes=reason)
+            filter_drops[reason] = filter_drops.get(reason, 0) + 1
+            dropped += 1
+            continue
+
+        fit = score_fit_rules(job, BASE_RESUME)
+        update_claude_outputs(job["job_id"], fit, "", {}, "", {})
+        scores_seen.append(fit["score"])
+        scored += 1
+
+    console.print(
+        f"\n[green]Scored {scored} jobs[/green]  "
+        f"[dim]({dropped} filtered out before scoring)[/dim]\n"
+    )
+
+    # Step 4: deep eval for top jobs (Groq, capped at DEEP_EVAL_LIMIT)
+    if os.environ.get("GROQ_API_KEY") or GROQ_API_KEY:
+        from pipeline.deep_eval import deep_eval_jobs, DEEP_EVAL_MIN, format_deep_eval
+        import json as _json
+        conn2 = get_conn()
+        top_jobs = [
+            dict(r) for r in conn2.execute(
+                "SELECT * FROM applications WHERE fit_score >= ? AND applied = 0"
+                " ORDER BY fit_score DESC",
+                (DEEP_EVAL_MIN,)
+            ).fetchall()
+        ]
+        conn2.close()
+        if top_jobs:
+            console.print(f"[cyan]Deep-evaluating top {len(top_jobs[:10])} jobs via Groq...[/cyan]")
+            evaluated = deep_eval_jobs(top_jobs, BASE_RESUME)
+            for ej in evaluated:
+                de = ej.get("deep_eval") or {}
+                if de:
+                    existing_fit = {
+                        "score":     ej.get("fit_score"),
+                        "verdict":   ej.get("fit_verdict", ""),
+                        "strengths": _json.loads(ej.get("fit_strengths") or "[]"),
+                        "gaps":      _json.loads(ej.get("fit_gaps") or "[]"),
+                    }
+                    existing_fit["deep_eval_summary"] = format_deep_eval(de)
+                    update_claude_outputs(
+                        ej["job_id"], existing_fit,
+                        ej.get("tailored_resume", ""),
+                        {}, "", {}
+                    )
+
+    # Step 5: log MLflow metrics and close run
+    conn3 = get_conn()
+    all_scored = [dict(r) for r in conn3.execute(
+        "SELECT * FROM applications WHERE fit_score IS NOT NULL AND applied = 0"
+    ).fetchall()]
+    conn3.close()
+
+    strong  = sum(1 for j in all_scored if (j.get("fit_score") or 0) >= 80)
+    good    = sum(1 for j in all_scored if 70 <= (j.get("fit_score") or 0) < 80)
+    avg_score = (sum(scores_seen) / len(scores_seen)) if scores_seen else 0
+
+    log_metrics({
+        "jobs_scraped":   len(unscored) + dropped,
+        "jobs_filtered":  dropped,
+        "jobs_scored":    scored,
+        "avg_fit_score":  round(avg_score, 1),
+        "strong_matches": strong,
+        "good_matches":   good,
+    })
+    log_filter_breakdown(filter_drops)
+    log_top_jobs(all_scored)
+    end_run()
+
+    # Step 6: tiered display
+    print_status(include_actions=True)
 
 
 # ── MAIN ──────────────────────────────────────────────────────────────────
@@ -568,17 +922,111 @@ def main():
     parser = argparse.ArgumentParser(
         description="Apply Easy — Job Automator powered by Claude"
     )
-    parser.add_argument("--scrape",    action="store_true", help="Scrape new jobs")
+    parser.add_argument("--prep",      action="store_true", help="Segment 1: detect top roles + generate resume variations")
+    parser.add_argument("--discover",  action="store_true", help="Segment 2: scrape + score all jobs + show tiered shortlist")
+    parser.add_argument("--scrape",    action="store_true", help="Scrape new jobs only")
     parser.add_argument("--classify",  action="store_true", help="Classify jobs as easy-apply or full-form")
-    parser.add_argument("--process",   action="store_true", help="Run AI pipeline (tailor resume, cover letter, outreach)")
+    parser.add_argument("--process",   action="store_true", help="AI tailor resume + cover letter for shortlisted jobs")
     parser.add_argument("--apply",     action="store_true", help="Auto-apply to pending jobs using generated resumes")
     parser.add_argument("--dry-run",   action="store_true", help="Simulate --apply without submitting (safe for testing)")
-    parser.add_argument("--status",    action="store_true", help="Show application status table")
-    parser.add_argument("--limit",     type=int, default=None, help="Max jobs to process per run")
+    parser.add_argument("--status",         action="store_true", help="Show tiered shortlist table")
+    parser.add_argument("--resume-status",   action="store_true", help="Show resume tier status for all clusters")
+    parser.add_argument("--clean",           action="store_true", help="Retroactively skip all pending jobs that fail pre-filters (no LLM)")
+    parser.add_argument("--promote",          metavar="CLUSTER",   help="Promote cached resume to approved for a cluster (e.g. ml_ai)")
+    parser.add_argument("--top",              type=int, default=5,  help="Number of top roles for --prep (default: 5)")
+    parser.add_argument("--limit",            type=int, default=None, help="Max jobs to process per run")
     args = parser.parse_args()
+
+    if args.prep:
+        run_prep(top_n=args.top)
+        return
+
+    if args.discover:
+        run_discover(limit=args.limit)
+        return
 
     if args.status:
         print_status()
+        return
+
+    if getattr(args, "resume_status", False):
+        from pipeline.cluster_cache import list_all_resumes
+        rows = list_all_resumes()
+        tbl  = Table(title=f"Resume tiers  (mode: {RESUME_MODE})",
+                     show_header=True, header_style="bold cyan")
+        tbl.add_column("Cluster")
+        tbl.add_column("Label")
+        tbl.add_column("Source",   justify="center")
+        tbl.add_column("Age",      justify="right")
+        tbl.add_column("PDF",      justify="center")
+        src_color = {"approved": "green", "cached": "yellow", "none": "red"}
+        for r in rows:
+            color = src_color.get(r["source"], "white")
+            stale = " [dim](stale)[/dim]" if r["stale"] else ""
+            age   = f"{r['age_days']}d{stale}" if r["age_days"] is not None else "—"
+            pdf   = "[green]✓[/green]" if r["has_pdf"] else "[dim]—[/dim]"
+            tbl.add_row(
+                r["cluster"],
+                r["label"],
+                f"[{color}]{r['source']}[/{color}]",
+                age,
+                pdf,
+            )
+        console.print(tbl)
+        console.print(
+            "\n[dim]To promote a cached resume: python main.py --promote <cluster>[/dim]\n"
+            "[dim]To use hand-crafted: drop resumes/<cluster>.txt into the resumes/ folder[/dim]"
+        )
+        return
+
+    if getattr(args, "clean", False):
+        # Retroactively run pre-filters on all pending jobs and mark
+        # off-target / garbage ones as skipped without any LLM calls.
+        import sqlite3 as _sq
+        conn = _sq.connect("output/applications.db")
+        conn.row_factory = _sq.Row
+        jobs = [dict(r) for r in conn.execute(
+            "SELECT * FROM applications WHERE applied=0"
+        )]
+        skipped_n = 0
+        for j in jobs:
+            co = j.get("company", "")
+            ti = j.get("title", "")
+            jd = j.get("description", "") or ""
+            lo = j.get("location", "") or ""
+            reason = None
+            if is_blacklisted(co):
+                reason = "Blacklisted company"
+            elif is_off_target_title(ti):
+                reason = "Off-target title"
+            elif is_overleveled(jd):
+                reason = "Overleveled"
+            elif is_wrong_location(lo, jd):
+                reason = "Wrong location"
+            elif keyword_prescore(jd, ti) < KEYWORD_PRESCORE_MIN:
+                reason = "Low keyword match"
+            if reason:
+                conn.execute(
+                    "UPDATE applications SET applied=2, notes=? WHERE job_id=?",
+                    (reason, j["job_id"]),
+                )
+                console.print(f"  [dim]↷ {reason}: {ti[:40]} @ {co[:25]}[/dim]")
+                skipped_n += 1
+        conn.commit()
+        conn.close()
+        console.print(f"\n[green]✓ Cleaned {skipped_n} jobs out of {len(jobs)} pending.[/green]")
+        console.print("[dim]Run --status to see what remains.[/dim]")
+        return
+
+    if getattr(args, "promote", None):
+        from pipeline.cluster_cache import promote_to_approved
+        cluster = args.promote
+        try:
+            path = promote_to_approved(cluster)
+            console.print(f"[green]✓ Promoted '{cluster}' cache → {path}[/green]")
+            console.print("[dim]Edit that file, then re-run --process to use it.[/dim]")
+        except FileNotFoundError as e:
+            console.print(f"[red]Error: {e}[/red]")
         return
     if args.scrape:
         scrape_all()

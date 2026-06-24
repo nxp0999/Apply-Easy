@@ -1,16 +1,15 @@
-import os
 import json
 import re
 import time
 from groq import Groq
-from config import BASE_RESUME
+from config import BASE_RESUME, GROQ_API_KEY
 from resume_rules import (
     build_tailor_prompt, build_score_fit_prompt,
     build_score_tailored_prompt, build_cover_letter_prompt,
     build_outreach_prompt
 )
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY", ""))
+client = Groq(api_key=GROQ_API_KEY)
 MODEL  = "llama-3.1-8b-instant"
 
 
@@ -43,15 +42,15 @@ def _parse_json(text: str) -> dict:
         start = text.index("{")
         obj, _ = decoder.raw_decode(text[start:])
         return obj
-    except Exception as e:
+    except Exception:
         raise ValueError(f"No JSON found: {text[:200]}")
 
 
 def score_fit(job: dict) -> dict:
     return _parse_json(_call(build_score_fit_prompt(job, BASE_RESUME)))
 
-def tailor_resume(job: dict) -> str:
-    return _call(build_tailor_prompt(job, BASE_RESUME))
+def tailor_resume(job: dict, missing_keywords: list = None) -> str:
+    return _call(build_tailor_prompt(job, BASE_RESUME, missing_keywords=missing_keywords))
 
 def score_tailored_resume(tailored: str) -> dict:
     return _parse_json(_call(build_score_tailored_prompt(tailored, BASE_RESUME)))

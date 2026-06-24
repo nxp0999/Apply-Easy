@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: apply-easy-config
+  namespace: apply-easy
+data:
+  MLFLOW_TRACKING_URI: "http://mlflow-service:5001"
+  KEYWORD_PRESCORE_MIN: "0.12"
+  MIN_FIT_SCORE: "70"
+  RESUME_MODE: "tex"
